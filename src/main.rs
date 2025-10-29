@@ -35,13 +35,13 @@ use thread::spawn;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let program_start = Instant::now();
-
     let config = Config::parse();
     let n_frames = config.fps * config.duration_s;
     let index = choose_video_index()?;
     let dirs = prepare_video_dirs_and_meta(index, &config)?;
 
     println!("\n--- Video Stats ---");
+
     if let Some(map) = dirs.meta.as_object() {
         for (key, value) in map {
             if key != "constants" {
@@ -51,6 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let entries: Vec<fs::DirEntry> = read_dir(&dirs.frames_dir)?.collect::<Result<Vec<_>, _>>()?;
+
     let (frame_count_res, total_size_bytes_res) = entries
         .par_iter()
         .filter_map(|entry| {
@@ -89,6 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let start_time = Instant::now();
     let output_path = format!("mp4/{}.mp4", index);
+
     let compute_time = run_frame_generation(
         sim_data,
         &config,
@@ -100,17 +102,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.fps,
         n_frames,
     )?;
+
     let total_compute_time =
         dirs.meta.get("compute_time").and_then(|v| v.as_f64()).unwrap_or(0.0) + compute_time;
+
     let mut updated_meta = dirs.meta.clone();
     updated_meta["compute_time"] = Value::from(total_compute_time);
     updated_meta["last_frame"] = Value::from(n_frames);
-
     write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
+
     println!("Video saved to `mp4/{}`", index);
 
     let _total_elapsed = start_time.elapsed();
+
     println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
+
     Ok(())
 }
 
@@ -521,6 +527,7 @@ pub fn render(
 
     let ln_min = vmin_clamped.ln();
     let ln_max = vmax_clamped.ln();
+
     let ln_range_inv = if (ln_max - ln_min).abs() > 0.0 { 1.0 / (ln_max - ln_min) } else { 0.0 };
 
     let palette_max = palette.len() - 1;
@@ -546,8 +553,8 @@ pub fn render(
             let bin_x = (x * bins) / width as usize;
             let small_idx = bin_y * bins + bin_x;
             let [r, g, b] = small[small_idx];
-
             let base = x * 3;
+
             if base + 2 < row.len() {
                 row[base] = r;
                 row[base + 1] = g;
@@ -572,6 +579,7 @@ pub fn render(
         let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
 
         let mut x = ((bx_val - x_edges[0]) / x_span * (width - 1) as f32).round() as i64;
+
         let mut y = height as i64
             - 1
             - ((by_val - y_edges[0]) / y_span * (height - 1) as f32).round() as i64;
@@ -593,7 +601,6 @@ pub fn render(
     }
 
     let thickness = 2usize;
-
     draw_boundary(&mut image, &sampled_pts, width, height, thickness);
 
     image
@@ -611,7 +618,9 @@ pub struct SimulationData {
 impl SimulationData {
     pub fn new(config: &Config, start_frame: u64) -> Self {
         let palette = Arc::new(build_palette());
+
         let (bx, by) = shape_boundary(config.a, config.b, config.n_exp, config.m_exp, 400);
+
         let (x_edges, y_edges) = histogram_edges(config.a, config.b, config.res, 1.2);
 
         let mut system = init_cluster(
@@ -661,12 +670,15 @@ pub fn run_frame_generation(
     let (width, height) = compute_out_px(config.dpi);
 
     let total_to_generate = if n_frames > start_frame { n_frames - start_frame } else { 0 };
+
     let pb = ProgressBar::new(total_to_generate);
+
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{prefix} {bar:40.cyan/blue} {pos:>7}/{len:7} {percent:>3}% ({eta})")?
             .progress_chars("##-"),
     );
+
     pb.set_prefix("Generating frames");
 
     let bins = config.res as usize;
@@ -676,6 +688,7 @@ pub fn run_frame_generation(
     let mut h_log_flat = vec![0f32; total_bins];
 
     let mut cmd = Command::new("ffmpeg");
+
     cmd.arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -708,6 +721,7 @@ pub fn run_frame_generation(
         .stderr(Stdio::null());
 
     let mut child = cmd.spawn()?;
+
     let child_stdin = child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
 
     let (tx, rx) = bounded::<RgbImage>(8);
@@ -746,6 +760,7 @@ pub fn run_frame_generation(
         );
 
         let hist = compute_histogram(&sim_data.system, config.a, config.b, config.res);
+
         histogram_buf.copy_from_slice(&hist);
 
         h_log_flat.par_iter_mut().zip(&histogram_buf).for_each(|(h, &v)| {
@@ -772,15 +787,19 @@ pub fn run_frame_generation(
     let _ = writer_handle.join();
 
     let stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
+
     let reader = BufReader::new(stdout);
 
     let spinner = ProgressBar::new_spinner();
+
     spinner
         .set_style(ProgressStyle::default_spinner().template("{prefix} {spinner} {msg}").unwrap());
+
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
     let spinner_clone = spinner.clone();
+
     let parser_handle = spawn(move || {
         let mut last_msg = String::new();
         for line_res in reader.lines() {
@@ -791,8 +810,8 @@ pub fn run_frame_generation(
 
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 let kv_map = parse_kv_from_parts(&parts);
-
                 let (msg, is_end) = build_progress_msg(&kv_map);
+
                 if msg != last_msg {
                     spinner_clone.set_message(msg.clone());
                     last_msg = msg;
@@ -809,10 +828,10 @@ pub fn run_frame_generation(
     let _ = parser_handle.join();
 
     spinner.finish_and_clear();
-
     pb.finish_with_message("Frame generation complete");
 
     let elapsed = start_time.elapsed().as_secs_f64();
+
     Ok(elapsed)
 }
 
@@ -882,12 +901,12 @@ pub fn init_cluster(
 
     system.particles_mut().par_chunks_mut(chunk_size).enumerate().for_each(|(chunk_idx, chunk)| {
         let _rng = StdRng::seed_from_u64(chunk_idx as u64);
-
         chunk.par_iter_mut().enumerate().for_each(|(i, particle)| {
             let seed = (chunk_idx as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(i as u64);
             let mut local_rng = StdRng::seed_from_u64(seed);
 
             let u1 = (local_rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
+
             let u2 = (local_rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
 
             let r = radius * (u1.sqrt() as f32);
@@ -905,6 +924,7 @@ pub fn init_cluster(
 
 fn pow_fast(x: f32, e: f32) -> f32 {
     const EPS: f32 = 1e-6;
+
     if (e - 1.0).abs() < EPS {
         x
     } else if (e - 2.0).abs() < EPS {
@@ -942,7 +962,6 @@ pub fn step(
             let py = particle.y + particle.vy * dt;
             let xna = px.abs() * inv_a;
             let ynb = py.abs() * inv_b;
-
             let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
 
             if val <= 0.0 {
@@ -968,11 +987,14 @@ pub fn step(
             }
 
             let inv_len = len2.sqrt().recip();
+
             let nx = df_dx * inv_len;
             let ny = df_dy * inv_len;
+
             let vx = particle.vx;
             let vy = particle.vy;
             let vxn = vx * nx + vy * ny;
+
             let rx = vx - 2.0 * vxn * nx;
             let ry = vy - 2.0 * vxn * ny;
 
@@ -1014,6 +1036,7 @@ fn try_insert_numeric(name: &str, used_indices: &mut HashSet<u64>) {
 
 pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
     let mp4_dir = Path::new("mp4");
+
     if !mp4_dir.exists() {
         create_dir_all(mp4_dir)?;
         return Ok(1);
@@ -1071,6 +1094,7 @@ pub fn prepare_video_dirs_and_meta(
     create_dir_all(&frames_dir)?;
 
     let meta_path = video_dir.join("meta.json");
+
     let meta = if meta_path.exists() {
         let meta_content = fs::read_to_string(&meta_path)?;
         from_str(&meta_content)?
@@ -1127,12 +1151,16 @@ pub fn generate_video(
         .stderr(Stdio::null());
 
     let mut child = cmd.spawn()?;
+
     let stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
+
     let reader = BufReader::new(stdout);
 
     let spinner = ProgressBar::new_spinner();
+
     spinner
         .set_style(ProgressStyle::default_spinner().template("{prefix} {spinner} {msg}").unwrap());
+
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
@@ -1166,6 +1194,7 @@ pub fn generate_video(
     spinner.finish_and_clear();
 
     let final_pb = ProgressBar::new(total);
+
     final_pb.set_style(
         ProgressStyle::default_bar()
             .template("{prefix} {bar:40.green/white} {pos:>7}/{len:7} {percent:>3}% ({elapsed})")
@@ -1186,6 +1215,7 @@ pub fn generate_video(
 
 fn size_to_bytes(s: &str) -> Option<u64> {
     let s = s.trim();
+
     if s.is_empty() || s.eq_ignore_ascii_case("N/A") {
         return None;
     }
@@ -1195,6 +1225,7 @@ fn size_to_bytes(s: &str) -> Option<u64> {
     }
 
     let s_upper = s.to_uppercase();
+
     let units = [
         ("B", 1u64),
         ("KB", 1_000u64),
@@ -1226,6 +1257,7 @@ fn size_to_bytes(s: &str) -> Option<u64> {
 fn parse_kv_from_parts(parts: &[&str]) -> std::collections::HashMap<String, String> {
     let mut kv_map = std::collections::HashMap::new();
     let mut i = 0;
+
     while i < parts.len() {
         let part = parts[i];
         if let Some(eq_pos) = part.find('=') {
@@ -1239,6 +1271,7 @@ fn parse_kv_from_parts(parts: &[&str]) -> std::collections::HashMap<String, Stri
         }
         i += 1;
     }
+
     kv_map
 }
 
