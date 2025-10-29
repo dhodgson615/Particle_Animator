@@ -1,17 +1,17 @@
 edition = "2024"
-max_width = 80
+max_width = 100
 hard_tabs = false
 tab_spaces = 4
 
 reorder_imports = true
-merge_imports = true
-imports_granularity = "Item"        # options: "Crate", "Module", "Item"
+# merge_imports = true
+# imports_granularity = "Item"             # options: "Crate", "Module", "Item"
 
-wrap_comments = true
-format_code_in_doc_comments = true
+# wrap_comments = true
+# format_code_in_doc_comments = true
 
-newline_style = "Unix"              # "Unix" or "Windows"
-trailing_comma = "Vertical"         # examples: "Never", "Always", "Vertical"
+newline_style = "Unix"                     # options: "Unix" or "Windows"
+# trailing_comma = "Vertical"              # options: "Always", "Never", "Vertical"
 
-control_brace_style = "ClosingNextLine"
-use_small_heuristics = "Default"
+# control_brace_style = "ClosingNextLine"  # options: "AlwaysSameLine", "ClosingNextLine", "AlwaysNextLine"
+use_small_heuristics = "Max"               # options: "Max", "Off", "Default"
