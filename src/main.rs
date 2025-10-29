@@ -1,7 +1,7 @@
+use Ordering::Relaxed;
 use Value::Null;
 use chrono::Utc;
 use clap::Parser;
-use collections::HashMap;
 use crossbeam_channel::bounded;
 use fs::{create_dir_all, read_dir, write};
 use image::ColorType;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, from_str, to_string_pretty};
 use std::io::Write;
 use std::{
-    collections::{self, HashSet},
+    collections::HashSet,
     error::Error,
     f32::consts::PI,
     fs,
@@ -364,7 +364,7 @@ pub fn compute_histogram(system: &ParticleSystem, a: f32, b: f32, bins: u32) -> 
         .map(|chunk| {
             let local: Vec<AtomicU32> = (0..total_bins).map(|_| AtomicU32::new(0)).collect();
 
-            chunk.par_iter().for_each(|particle| {
+            for particle in chunk.iter() {
                 let px = particle.x;
                 let py = particle.y;
 
@@ -373,25 +373,24 @@ pub fn compute_histogram(system: &ParticleSystem, a: f32, b: f32, bins: u32) -> 
 
                 if ix >= 0 && ix < bins as i32 && iy >= 0 && iy < bins as i32 {
                     let idx = (iy as usize) * bins_usize + (ix as usize);
-                    local[idx].fetch_add(1, Ordering::Relaxed);
+                    local[idx].fetch_add(1, Relaxed);
                 }
-            });
+            }
 
             local
         })
         .reduce(
             || (0..total_bins).map(|_| AtomicU32::new(0)).collect::<Vec<AtomicU32>>(),
             |a, b| {
-                b.into_par_iter().enumerate().for_each(|(i, v)| {
-                    let vval = v.load(Ordering::Relaxed);
-                    a[i].fetch_add(vval, Ordering::Relaxed);
-                });
-
+                for (i, v) in b.iter().enumerate() {
+                    let vval = v.load(Relaxed);
+                    a[i].fetch_add(vval, Relaxed);
+                }
                 a
             },
         );
 
-    combined_atomic.into_iter().map(|c| c.load(Ordering::Relaxed) as f32).collect()
+    combined_atomic.into_iter().map(|c| c.load(Relaxed) as f32).collect()
 }
 
 fn bresenham_points(mut x0: i64, mut y0: i64, x1: i64, y1: i64) -> Vec<(i64, i64)> {
@@ -421,91 +420,68 @@ fn bresenham_points(mut x0: i64, mut y0: i64, x1: i64, y1: i64) -> Vec<(i64, i64
     pts
 }
 
-fn draw_boundary_parallel(
+fn draw_boundary(
     image: &mut RgbImage,
     points: &[(i64, i64)],
     width: u32,
     height: u32,
-    linewidth: usize,
+    thickness: usize,
 ) {
-    let seg_pixels: Vec<Vec<(u32, u32)>> = (0..points.len())
-        .into_par_iter()
-        .map(|i| {
-            let (x1, y1) = points[i];
-            let (x2, y2) = points[(i + 1) % points.len()];
-            let base_pts = bresenham_points(x1, y1, x2, y2);
-            let _local: Vec<i64> = Vec::new();
-            let lw_half = (linewidth as i64) / 2;
-
-            let local: Vec<(u32, u32)> = base_pts
-                .par_iter()
-                .flat_map_iter(|&(x, y)| {
-                    let out = Vec::with_capacity(((2 * lw_half + 1) * (2 * lw_half + 1)) as usize);
-                    (-lw_half..=lw_half)
-                        .into_par_iter()
-                        .flat_map_iter(|wx| {
-                            (-lw_half..=lw_half).into_iter().filter_map(move |wy| {
-                                let px = x + wx;
-                                let py = y + wy;
-                                if px >= 0
-                                    && py >= 0
-                                    && (px as u64) < width as u64
-                                    && (py as u64) < height as u64
-                                {
-                                    Some((px as u32, py as u32))
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .collect::<Vec<(u32, u32)>>();
-
-                    out.into_iter()
-                })
-                .collect();
-
-            local
-        })
-        .collect();
-
-    let per_row_map: HashMap<u32, Vec<u32>> = seg_pixels
-        .into_par_iter()
-        .fold(
-            || HashMap::new(),
-            |mut local: HashMap<u32, Vec<u32>>, seg| {
-                for (px, py) in seg {
-                    local.entry(py).or_default().push(px);
-                }
-                local
-            },
-        )
-        .reduce(
-            || HashMap::new(),
-            |mut a, b| {
-                for (py, mut v) in b {
-                    a.entry(py).or_default().append(&mut v);
-                }
-                a
-            },
-        );
-
-    let mut per_row_vecs: Vec<Vec<u32>> = vec![Vec::new(); height as usize];
-
-    for (py, v) in per_row_map {
-        if (py as usize) < per_row_vecs.len() {
-            per_row_vecs[py as usize] = v;
-        }
+    if points.is_empty() {
+        return;
     }
 
-    let row_bytes = (width * 3) as usize;
-    image.par_chunks_mut(row_bytes).enumerate().for_each(|(y, row)| {
-        let pixels = &per_row_vecs[y];
-        for &px in pixels {
-            let base = (px as usize) * 3;
-            if base + 2 < row.len() {
-                row[base] = 255;
-                row[base + 1] = 255;
-                row[base + 2] = 255;
+    let w = width as usize;
+    let h = height as usize;
+    let total = w.saturating_mul(h);
+    let atoms: Vec<AtomicU32> = (0..total).map(|_| AtomicU32::new(0)).collect();
+    let atoms = Arc::new(atoms);
+
+    let rad = thickness as i64;
+
+    (0..points.len()).into_par_iter().for_each(|i| {
+        let (x0, y0) = points[i];
+        let (x1, y1) = points[(i + 1) % points.len()];
+        let line_pts = bresenham_points(x0, y0, x1, y1);
+
+        line_pts.into_par_iter().for_each(|(lx, ly)| {
+            let px_min_i64 = (lx - rad).max(0);
+            let px_max_i64 = (lx + rad).min((w as i64) - 1);
+            let py_min_i64 = (ly - rad).max(0);
+            let py_max_i64 = (ly + rad).min((h as i64) - 1);
+
+            if px_min_i64 > px_max_i64 || py_min_i64 > py_max_i64 {
+                return;
+            }
+
+            let px_min = px_min_i64 as usize;
+            let px_max = px_max_i64 as usize;
+            let py_min = py_min_i64 as usize;
+            let py_max = py_max_i64 as usize;
+
+            let atoms = atoms.clone();
+            (py_min..=py_max).into_par_iter().for_each(|pyu| {
+                let base_row = pyu * w;
+                (px_min..=px_max).into_par_iter().for_each(|pxu| {
+                    let idx = base_row + pxu;
+                    atoms[idx].store(1, Relaxed);
+                });
+            });
+        });
+    });
+
+    image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
+        let y = y;
+        let base_row_idx = y * w;
+        for x in 0..w {
+            let idx = base_row_idx + x;
+            if atoms[idx].load(Relaxed) != 0 {
+                let base = x * 3;
+                if base + 2 < row.len() {
+                    row[base] = 255;
+                    row[base + 1] = 255;
+                    row[base + 2] = 255;
+                }
             }
         }
     });
@@ -580,24 +556,45 @@ pub fn render(
         }
     });
 
-    use rayon::prelude::*;
-    let points: Vec<(i64, i64)> = bx
-        .par_iter()
-        .zip(by.par_iter())
-        .map(|(&bx_val, &by_val)| {
-            let x = ((bx_val - x_edges[0]) / (x_edges[bins] - x_edges[0]) * (width - 1) as f32)
-                .round() as i64;
-            let y = height as i64
-                - 1
-                - ((by_val - y_edges[0]) / (y_edges[bins] - y_edges[0]) * (height - 1) as f32)
-                    .round() as i64;
-            (x, y)
-        })
-        .collect();
+    let x_span = (x_edges[bins] - x_edges[0]).abs().max(1e-6);
+    let y_span = (y_edges[bins] - y_edges[0]).abs().max(1e-6);
 
-    let linewidth = (width / 150).max(1) as usize;
+    let orig_n = bx.len().max(1);
+    let sample_n = bins.max(3);
+    let mut sampled_pts: Vec<(i64, i64)> = Vec::with_capacity(sample_n);
 
-    draw_boundary_parallel(&mut image, &points, width, height, linewidth);
+    for k in 0..sample_n {
+        let idxf = (k as f32) * (orig_n as f32) / (sample_n as f32);
+        let i0 = idxf.floor() as usize % orig_n;
+        let i1 = (i0 + 1) % orig_n;
+        let frac = idxf - idxf.floor();
+        let bx_val = bx[i0] * (1.0 - frac) + bx[i1] * frac;
+        let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
+
+        let mut x = ((bx_val - x_edges[0]) / x_span * (width - 1) as f32).round() as i64;
+        let mut y = height as i64
+            - 1
+            - ((by_val - y_edges[0]) / y_span * (height - 1) as f32).round() as i64;
+
+        if x < 0 {
+            x = 0
+        }
+        if y < 0 {
+            y = 0
+        }
+        if x >= width as i64 {
+            x = (width - 1) as i64
+        }
+        if y >= height as i64 {
+            y = (height - 1) as i64
+        }
+
+        sampled_pts.push((x, y));
+    }
+
+    let thickness = 2usize;
+
+    draw_boundary(&mut image, &sampled_pts, width, height, thickness);
 
     image
 }
@@ -662,6 +659,7 @@ pub fn run_frame_generation(
     _total_frames: u64,
 ) -> Result<f64, Box<dyn Error>> {
     let (width, height) = compute_out_px(config.dpi);
+
     let total_to_generate = if n_frames > start_frame { n_frames - start_frame } else { 0 };
     let pb = ProgressBar::new(total_to_generate);
     pb.set_style(
@@ -712,8 +710,7 @@ pub fn run_frame_generation(
     let mut child = cmd.spawn()?;
     let child_stdin = child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
 
-    // writer thread for piping PNGs to ffmpeg stdin
-    let (tx, rx) = bounded::<RgbImage>(16);
+    let (tx, rx) = bounded::<RgbImage>(8);
     let writer_handle = spawn(move || {
         let mut writer = child_stdin;
         while let Ok(img) = rx.recv() {
@@ -771,11 +768,9 @@ pub fn run_frame_generation(
         pb.inc(1);
     }
 
-    // finished generating frames -> close sender and wait for writer to finish
     drop(tx);
     let _ = writer_handle.join();
 
-    // now start spinner/parser to show ffmpeg progress while it finalises the video
     let stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
     let reader = BufReader::new(stdout);
 
@@ -794,52 +789,17 @@ pub fn run_frame_generation(
                     continue;
                 }
 
-                let mut kv_map = HashMap::new();
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                let mut i = 0;
-                while i < parts.len() {
-                    let part = parts[i];
-                    if let Some(eq_pos) = part.find('=') {
-                        let key = part[..eq_pos].trim().to_string();
-                        let mut val = part[eq_pos + 1..].trim();
-                        if val.is_empty() && (i + 1) < parts.len() && !parts[i + 1].contains('=') {
-                            i += 1;
-                            val = parts[i].trim();
-                        }
-                        kv_map.insert(key, val.to_string());
-                    }
-                    i += 1;
-                }
+                let kv_map = parse_kv_from_parts(&parts);
 
-                let mut parts_msg = Vec::new();
-                if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) {
-                    if let Some(bytes) = size_to_bytes(size) {
-                        parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6));
-                    }
-                }
-
-                if let Some(fps_s) = kv_map.get("fps") {
-                    parts_msg.push(format!("fps:{}", fps_s.trim()));
-                }
-
-                if let Some(speed) = kv_map.get("speed") {
-                    parts_msg.push(format!("speed:{}", speed.trim()));
-                }
-
-                if let Some(out_time) = kv_map.get("out_time").or_else(|| kv_map.get("time")) {
-                    parts_msg.push(format!("time:{}", out_time.trim()));
-                }
-
-                let msg = parts_msg.join(" | ");
+                let (msg, is_end) = build_progress_msg(&kv_map);
                 if msg != last_msg {
                     spinner_clone.set_message(msg.clone());
                     last_msg = msg;
                 }
 
-                if let Some(progress) = kv_map.get("progress") {
-                    if progress.trim() == "end" {
-                        break;
-                    }
+                if is_end {
+                    break;
                 }
             }
         }
@@ -1091,6 +1051,7 @@ pub fn choose_video_index() -> Result<u64, Box<dyn Error>> {
     stdin().read_line(&mut input)?;
 
     let input = input.trim();
+
     if input.is_empty() {
         let index = next_available_index()?;
         println!("Using next available index: {}", index);
@@ -1185,54 +1146,18 @@ pub fn generate_video(
             continue;
         }
 
-        let mut kv_map = HashMap::new();
         let parts: Vec<&str> = line.split_whitespace().collect();
-        let mut i = 0;
-        while i < parts.len() {
-            let part = parts[i];
-            if let Some(eq_pos) = part.find('=') {
-                let key = part[..eq_pos].trim().to_string();
-                let mut val = part[eq_pos + 1..].trim();
-                if val.is_empty() && (i + 1) < parts.len() && !parts[i + 1].contains('=') {
-                    i += 1;
-                    val = parts[i].trim();
-                }
-                kv_map.insert(key, val.to_string());
-            }
-            i += 1;
-        }
+        let kv_map = parse_kv_from_parts(&parts);
 
-        let mut parts_msg = Vec::new();
-
-        if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) {
-            if let Some(bytes) = size_to_bytes(size) {
-                parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6));
-            }
-        }
-
-        if let Some(fps_s) = kv_map.get("fps") {
-            parts_msg.push(format!("fps:{}", fps_s.trim()));
-        }
-
-        if let Some(speed) = kv_map.get("speed") {
-            parts_msg.push(format!("speed:{}", speed.trim()));
-        }
-
-        if let Some(out_time) = kv_map.get("out_time").or_else(|| kv_map.get("time")) {
-            parts_msg.push(format!("time:{}", out_time.trim()));
-        }
-
-        let msg = parts_msg.join(" | ");
+        let (msg, is_end) = build_progress_msg(&kv_map);
         if msg != last_msg {
             spinner.set_message(msg.clone());
             last_msg = msg;
         }
 
-        if let Some(progress) = kv_map.get("progress") {
-            if progress.trim() == "end" {
-                _seen_end = true;
-                break;
-            }
+        if is_end {
+            _seen_end = true;
+            break;
         }
     }
 
@@ -1296,4 +1221,49 @@ fn size_to_bytes(s: &str) -> Option<u64> {
     }
 
     None
+}
+
+fn parse_kv_from_parts(parts: &[&str]) -> std::collections::HashMap<String, String> {
+    let mut kv_map = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < parts.len() {
+        let part = parts[i];
+        if let Some(eq_pos) = part.find('=') {
+            let key = part[..eq_pos].trim().to_string();
+            let mut val = part[eq_pos + 1..].trim();
+            if val.is_empty() && (i + 1) < parts.len() && !parts[i + 1].contains('=') {
+                i += 1;
+                val = parts[i].trim();
+            }
+            kv_map.insert(key, val.to_string());
+        }
+        i += 1;
+    }
+    kv_map
+}
+
+fn build_progress_msg(kv_map: &std::collections::HashMap<String, String>) -> (String, bool) {
+    let mut parts_msg = Vec::new();
+
+    if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) {
+        if let Some(bytes) = size_to_bytes(size) {
+            parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6));
+        }
+    }
+
+    if let Some(fps_s) = kv_map.get("fps") {
+        parts_msg.push(format!("fps:{}", fps_s.trim()));
+    }
+
+    if let Some(speed) = kv_map.get("speed") {
+        parts_msg.push(format!("speed:{}", speed.trim()));
+    }
+
+    if let Some(out_time) = kv_map.get("progress").or_else(|| kv_map.get("time")) {
+        parts_msg.push(format!("time:{}", out_time.trim()));
+    }
+
+    let msg = parts_msg.join(" | ");
+    let is_end = kv_map.get("progress").map(|p| p.trim() == "end").unwrap_or(false);
+    (msg, is_end)
 }
