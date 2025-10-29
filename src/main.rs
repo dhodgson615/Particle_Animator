@@ -1,32 +1,30 @@
-use Ordering::Relaxed;
-use Value::Null;
+use ColorType::Rgb8;
+use Value::Object;
 use chrono::Utc;
 use clap::Parser;
+use collections::HashMap;
 use crossbeam_channel::bounded;
-use fs::{create_dir_all, read_dir, write};
-use image::ColorType;
-use image::ImageEncoder;
-use image::RgbImage;
-use image::codecs::png::PngEncoder;
+use image::{ColorType, ImageEncoder, RgbImage, codecs::png::PngEncoder};
 use indicatif::{ProgressBar, ProgressStyle};
-use io::BufReader;
-use process::Stdio;
 use rand::{RngCore, SeedableRng, prelude::StdRng};
 use rayon::{current_num_threads, prelude::*};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, from_str, to_string_pretty};
-use std::io::Write;
+use serde_json::{
+    Map,
+    Value::{self, Null},
+    from_str, json, to_string_pretty,
+};
 use std::{
-    collections::HashSet,
+    collections::{self, HashSet},
     error::Error,
     f32::consts::PI,
-    fs,
-    io::{self, BufRead, stdin},
+    fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
+    io::{BufRead, BufReader, Write, stdin},
     path::{Path, PathBuf},
-    process::{self, Command},
+    process::{Command, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, Ordering::Relaxed},
     },
     thread,
     time::{Duration, Instant},
@@ -50,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let entries: Vec<fs::DirEntry> = read_dir(&dirs.frames_dir)?.collect::<Result<Vec<_>, _>>()?;
+    let entries: Vec<DirEntry> = read_dir(&dirs.frames_dir)?.collect::<Result<Vec<_>, _>>()?;
 
     let (frame_count_res, total_size_bytes_res) = entries
         .par_iter()
@@ -197,7 +195,7 @@ pub struct Config {
 
 impl Config {
     pub fn constants(&self) -> Value {
-        serde_json::json!({
+        json!({
             "A": self.a,
             "B": self.b,
             "N_EXP": self.n_exp,
@@ -731,12 +729,9 @@ pub fn run_frame_generation(
             let width = img.width();
             let height = img.height();
             let raw = img.into_raw();
-            if let Err(e) = PngEncoder::new(&mut writer).write_image(
-                &raw,
-                width,
-                height,
-                ColorType::Rgb8.into(),
-            ) {
+            if let Err(e) =
+                PngEncoder::new(&mut writer).write_image(&raw, width, height, Rgb8.into())
+            {
                 let _ = eprintln!("ffmpeg stdin write error: {}", e);
                 break;
             }
@@ -1096,7 +1091,7 @@ pub fn prepare_video_dirs_and_meta(
     let meta_path = video_dir.join("meta.json");
 
     let meta = if meta_path.exists() {
-        let meta_content = fs::read_to_string(&meta_path)?;
+        let meta_content = read_to_string(&meta_path)?;
         from_str(&meta_content)?
     } else {
         let mut meta = Map::new();
@@ -1105,7 +1100,7 @@ pub fn prepare_video_dirs_and_meta(
         meta.insert("last_frame".to_string(), Value::from(0));
         meta.insert("compute_time".to_string(), Value::from(0.0));
         meta.insert("resolution".to_string(), Value::from(config.res));
-        Value::Object(meta)
+        Object(meta)
     };
 
     let start_frame = meta.get("last_frame").and_then(Value::as_u64).unwrap_or(0);
@@ -1254,8 +1249,8 @@ fn size_to_bytes(s: &str) -> Option<u64> {
     None
 }
 
-fn parse_kv_from_parts(parts: &[&str]) -> std::collections::HashMap<String, String> {
-    let mut kv_map = std::collections::HashMap::new();
+fn parse_kv_from_parts(parts: &[&str]) -> HashMap<String, String> {
+    let mut kv_map = HashMap::new();
     let mut i = 0;
 
     while i < parts.len() {
@@ -1275,7 +1270,7 @@ fn parse_kv_from_parts(parts: &[&str]) -> std::collections::HashMap<String, Stri
     kv_map
 }
 
-fn build_progress_msg(kv_map: &std::collections::HashMap<String, String>) -> (String, bool) {
+fn build_progress_msg(kv_map: &HashMap<String, String>) -> (String, bool) {
     let mut parts_msg = Vec::new();
 
     if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) {
