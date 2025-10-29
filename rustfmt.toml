@@ -2,3 +2,16 @@ edition = "2024"
 max_width = 80
 hard_tabs = false
 tab_spaces = 4
+
+reorder_imports = true
+merge_imports = true
+imports_granularity = "Item"        # options: "Crate", "Module", "Item"
+
+wrap_comments = true
+format_code_in_doc_comments = true
+
+newline_style = "Unix"              # "Unix" or "Windows"
+trailing_comma = "Vertical"         # examples: "Never", "Always", "Vertical"
+
+control_brace_style = "ClosingNextLine"
+use_small_heuristics = "Default"
