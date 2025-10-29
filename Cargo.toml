@@ -1,6 +1,6 @@
 [package]
 name = "ParticleAnimatorRust"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -23,5 +23,4 @@ debug = 0                    # no debug info in final binary
 incremental = false          # turn off incremental compilation for a clean full-optim build
 overflow-checks = false      # remove integer overflow checks for speed (unsafe if overflows may occur)
 panic = "abort"              # abort on panic (no unwinding overhead)
-
-# TODO: increase certain LLVM inlining heuristics for more aggressive inlining.
+strip = "symbols"            # strip symbols from the final binary to reduce size
