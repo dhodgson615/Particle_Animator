@@ -4,12 +4,24 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rayon = "1.7"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-image = "0.25.8"
+chrono = { version = "0.4.42" }
 clap = { version = "4.4", features = ["derive"] }
-rand = "0.9.2"
-indicatif = "0.18.2"
-chrono = "0.4.42"
-crossbeam-channel = "0.5"
+crossbeam-channel = { version = "0.5" }
+image = { version = "0.25.8" }
+indicatif = { version = "0.18.2" }
+rand = { version = "0.9.2" }
+rayon = { version = "1.7" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+
+
+[profile.release]
+opt-level = 3                # maximize LLVM optimizations for runtime speed
+lto = "fat"                  # full LTO (whole-program optimizations at link time)
+codegen-units = 1            # single codegen unit => best cross-function inlining
+debug = 0                    # no debug info in final binary
+incremental = false          # turn off incremental compilation for a clean full-optim build
+overflow-checks = false      # remove integer overflow checks for speed (unsafe if overflows may occur)
+panic = "abort"              # abort on panic (no unwinding overhead)
+
+# TODO: increase certain LLVM inlining heuristics for more aggressive inlining.
