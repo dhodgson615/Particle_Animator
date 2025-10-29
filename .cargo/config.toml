@@ -1,0 +1,5 @@
+[build]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-Cllvm-args=--inline-threshold=10000",  # ranges from 0 to 100000
+]
