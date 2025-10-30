@@ -6,7 +6,6 @@ use image::RgbImage;
 use indicatif::{ProgressBar, ProgressStyle};
 use mimalloc::MiMalloc;
 use num_cpus;
-use process::ExitStatus;
 use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{
@@ -109,6 +108,12 @@ pub struct Config {
 
     #[clap(long, default_value_t = DPI)]
     pub dpi: u32,
+
+    #[clap(long)]
+    pub sim_threads: Option<usize>,
+
+    #[clap(long)]
+    pub render_threads: Option<usize>,
 
     #[clap(long)]
     pub video_filename: Option<String>,
@@ -759,7 +764,6 @@ pub fn init_cluster(
     center_y: f32,
     vx0: f32,
     vy0: f32,
-    _pool: &ThreadPool,
 ) -> ParticleSystem {
     let n_usize = n as usize;
     let mut system = ParticleSystem::with_capacity(n_usize);
@@ -838,8 +842,9 @@ pub struct SimulationData {
 
 impl SimulationData {
     pub fn new(config: &Config, start_frame: u64) -> Self {
-        let sim_threads = num_cpus::get();
-        let render_threads = std::cmp::max(1, num_cpus::get() / 2);
+        let default_cpus = num_cpus::get();
+        let sim_threads = config.sim_threads.unwrap_or(default_cpus);
+        let render_threads = config.render_threads.unwrap_or(std::cmp::max(1, default_cpus / 2));
 
         let sim_pool = Arc::new(
             ThreadPoolBuilder::new()
@@ -847,6 +852,7 @@ impl SimulationData {
                 .build()
                 .expect("Failed to build sim thread pool"),
         );
+
         let render_pool = Arc::new(
             ThreadPoolBuilder::new()
                 .num_threads(render_threads)
@@ -868,7 +874,6 @@ impl SimulationData {
             config.center_y,
             config.vx0,
             config.vy0,
-            &sim_pool,
         );
 
         if start_frame > 0 {
@@ -907,11 +912,8 @@ pub fn run_frame_generation(
     config: &Config,
     n_frames: u64,
     start_frame: u64,
-    _frames_dir: &Path,
-    _meta: &Value,
     output_path: &str,
     fps: u64,
-    _total_frames: u64,
 ) -> Result<f64, Box<dyn Error>> {
     let (width, height) = compute_out_px(config.dpi);
 
@@ -1054,7 +1056,7 @@ pub fn run_frame_generation(
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let _status = scope(|s| -> Result<ExitStatus, Box<dyn Error>> {
+    let _status = scope(|s| -> Result<process::ExitStatus, Box<dyn Error>> {
         let spinner_clone = spinner.clone();
 
         let parser_handle = s.spawn(move || {
@@ -1432,11 +1434,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         &config,
         n_frames,
         dirs.start_frame,
-        &dirs.frames_dir,
-        &dirs.meta,
         &output_path,
         config.fps,
-        n_frames,
     )?;
 
     let total_compute_time =
