@@ -31,93 +31,6 @@ use std::{
 };
 use thread::spawn;
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let program_start = Instant::now();
-    let config = Config::parse();
-    let n_frames = config.fps * config.duration_s;
-    let index = choose_video_index()?;
-    let dirs = prepare_video_dirs_and_meta(index, &config)?;
-
-    println!("\n--- Video Stats ---");
-
-    if let Some(map) = dirs.meta.as_object() {
-        for (key, value) in map {
-            if key != "constants" {
-                println!("{}: {}", key, value);
-            }
-        }
-    }
-
-    let entries: Vec<DirEntry> = read_dir(&dirs.frames_dir)?.collect::<Result<Vec<_>, _>>()?;
-
-    let (frame_count_res, total_size_bytes_res) = entries
-        .par_iter()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "png") {
-                match entry.metadata() {
-                    Ok(m) => Some((1u64, m.len())),
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        })
-        .reduce(|| (0u64, 0u64), |a, b| (a.0 + b.0, a.1 + b.1));
-
-    let frame_count = frame_count_res;
-    let total_size_bytes = total_size_bytes_res;
-
-    println!("Frames saved: {}", frame_count);
-    println!("Date: {}", dirs.meta.get("date").unwrap_or(&Null));
-    println!("Total compute time: {}s", dirs.meta.get("compute_time").unwrap_or(&Value::from(0.0)));
-    println!("Video dir size: {:.2} MB", total_size_bytes as f64 / 1_000_000.0);
-    println!("Continue generating frames? (y/n): ");
-
-    let mut response = String::new();
-    stdin().read_line(&mut response)?;
-
-    if response.trim().to_lowercase() != "y" {
-        println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
-        return Ok(());
-    }
-
-    let sim_data = SimulationData::new(&config, dirs.start_frame);
-
-    println!("Running simulation...");
-
-    let start_time = Instant::now();
-    let output_path = format!("mp4/{}.mp4", index);
-
-    let compute_time = run_frame_generation(
-        sim_data,
-        &config,
-        n_frames,
-        dirs.start_frame,
-        &dirs.frames_dir,
-        &dirs.meta,
-        &output_path,
-        config.fps,
-        n_frames,
-    )?;
-
-    let total_compute_time =
-        dirs.meta.get("compute_time").and_then(|v| v.as_f64()).unwrap_or(0.0) + compute_time;
-
-    let mut updated_meta = dirs.meta.clone();
-    updated_meta["compute_time"] = Value::from(total_compute_time);
-    updated_meta["last_frame"] = Value::from(n_frames);
-    write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
-
-    println!("Video saved to `mp4/{}`", index);
-
-    let _total_elapsed = start_time.elapsed();
-
-    println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
-
-    Ok(())
-}
-
 const A: f32 = 2.5;
 const B: f32 = 1.0;
 const N_EXP: f32 = 4.0;
@@ -604,6 +517,184 @@ pub fn render(
     image
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Particle {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+}
+
+#[derive(Clone)]
+pub struct ParticleSystem {
+    particles: Vec<Particle>,
+}
+
+impl ParticleSystem {
+    pub fn new() -> Self {
+        Self { particles: Vec::new() }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { particles: Vec::with_capacity(capacity) }
+    }
+
+    pub fn resize(&mut self, size: usize) {
+        self.particles.resize(size, Particle { x: 0.0, y: 0.0, vx: 0.0, vy: 0.0 });
+    }
+
+    pub fn len(&self) -> usize {
+        self.particles.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.particles.is_empty()
+    }
+
+    pub fn particles(&self) -> &[Particle] {
+        &self.particles
+    }
+
+    pub fn particles_mut(&mut self) -> &mut [Particle] {
+        &mut self.particles
+    }
+}
+
+fn pow_fast(x: f32, e: f32) -> f32 {
+    const EPS: f32 = 1e-6;
+
+    if (e - 1.0).abs() < EPS {
+        x
+    } else if (e - 2.0).abs() < EPS {
+        x * x
+    } else if (e - 3.0).abs() < EPS {
+        x * x * x
+    } else if (e - 4.0).abs() < EPS {
+        let x2 = x * x;
+        x2 * x2
+    } else {
+        x.powf(e)
+    }
+}
+
+pub fn step(
+    system: &mut ParticleSystem,
+    dt: f32,
+    epsilon: f32,
+    a: f32,
+    b: f32,
+    n_exp: f32,
+    m_exp: f32,
+) {
+    if system.is_empty() {
+        return;
+    }
+
+    let inv_a = 1.0 / a;
+    let inv_b = 1.0 / b;
+    let eps2 = epsilon * epsilon;
+
+    system.particles_mut().par_chunks_mut(1024).for_each(|chunk| {
+        for particle in chunk {
+            let px = particle.x + particle.vx * dt;
+            let py = particle.y + particle.vy * dt;
+            let xna = px.abs() * inv_a;
+            let ynb = py.abs() * inv_b;
+            let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
+
+            if val <= 0.0 {
+                particle.x = px;
+                particle.y = py;
+                continue;
+            }
+
+            let sign_x = px.signum();
+            let sign_y = py.signum();
+
+            let xpow = pow_fast(px.abs() * inv_a, n_exp - 1.0);
+            let ypow = pow_fast(py.abs() * inv_b, m_exp - 1.0);
+
+            let df_dx = n_exp * inv_a * xpow * sign_x;
+            let df_dy = m_exp * inv_b * ypow * sign_y;
+            let len2 = df_dx * df_dx + df_dy * df_dy;
+
+            if len2 <= eps2 || len2 == 0.0 {
+                particle.x = px;
+                particle.y = py;
+                continue;
+            }
+
+            let inv_len = len2.sqrt().recip();
+
+            let nx = df_dx * inv_len;
+            let ny = df_dy * inv_len;
+
+            let vx = particle.vx;
+            let vy = particle.vy;
+            let vxn = vx * nx + vy * ny;
+
+            let rx = vx - 2.0 * vxn * nx;
+            let ry = vy - 2.0 * vxn * ny;
+
+            particle.vx = rx;
+            particle.vy = ry;
+            particle.x = px - rx * epsilon;
+            particle.y = py - ry * epsilon;
+        }
+    });
+}
+
+pub fn advance(
+    system: &mut ParticleSystem,
+    steps: u64,
+    dt: f32,
+    epsilon: f32,
+    a: f32,
+    b: f32,
+    n_exp: f32,
+    m_exp: f32,
+) {
+    (0..steps).for_each(|_| step(system, dt, epsilon, a, b, n_exp, m_exp));
+}
+
+pub fn init_cluster(
+    n: u64,
+    radius: f32,
+    center_x: f32,
+    center_y: f32,
+    vx0: f32,
+    vy0: f32,
+) -> ParticleSystem {
+    let n = n as usize;
+    let mut system = ParticleSystem::with_capacity(n);
+    system.resize(n);
+
+    let num_threads = current_num_threads();
+    let chunk_size = (n + num_threads - 1) / num_threads;
+
+    system.particles_mut().par_chunks_mut(chunk_size).enumerate().for_each(|(chunk_idx, chunk)| {
+        let _rng = StdRng::seed_from_u64(chunk_idx as u64);
+        chunk.par_iter_mut().enumerate().for_each(|(i, particle)| {
+            let seed = (chunk_idx as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(i as u64);
+            let mut local_rng = StdRng::seed_from_u64(seed);
+
+            let u1 = (local_rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
+
+            let u2 = (local_rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
+
+            let r = radius * (u1.sqrt() as f32);
+            let theta = (u2 as f32) * 2.0 * PI;
+
+            particle.x = r * theta.cos() + center_x;
+            particle.y = r * theta.sin() + center_y;
+            particle.vx = vx0;
+            particle.vy = vy0;
+        });
+    });
+
+    system
+}
+
 pub struct SimulationData {
     pub palette: Arc<Vec<[u8; 3]>>,
     pub bx: Arc<Vec<f32>>,
@@ -652,6 +743,12 @@ impl SimulationData {
             y_edges: Arc::new(y_edges),
         }
     }
+}
+
+fn compute_out_px(dpi: u32) -> (u32, u32) {
+    let fig_inches = 8.0;
+    let size = (fig_inches * dpi as f32).round() as u32;
+    (size, size)
 }
 
 pub fn run_frame_generation(
@@ -828,284 +925,6 @@ pub fn run_frame_generation(
     let elapsed = start_time.elapsed().as_secs_f64();
 
     Ok(elapsed)
-}
-
-fn compute_out_px(dpi: u32) -> (u32, u32) {
-    let fig_inches = 8.0;
-    let size = (fig_inches * dpi as f32).round() as u32;
-    (size, size)
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Particle {
-    pub x: f32,
-    pub y: f32,
-    pub vx: f32,
-    pub vy: f32,
-}
-
-#[derive(Clone)]
-pub struct ParticleSystem {
-    particles: Vec<Particle>,
-}
-
-impl ParticleSystem {
-    pub fn new() -> Self {
-        Self { particles: Vec::new() }
-    }
-
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self { particles: Vec::with_capacity(capacity) }
-    }
-
-    pub fn resize(&mut self, size: usize) {
-        self.particles.resize(size, Particle { x: 0.0, y: 0.0, vx: 0.0, vy: 0.0 });
-    }
-
-    pub fn len(&self) -> usize {
-        self.particles.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.particles.is_empty()
-    }
-
-    pub fn particles(&self) -> &[Particle] {
-        &self.particles
-    }
-
-    pub fn particles_mut(&mut self) -> &mut [Particle] {
-        &mut self.particles
-    }
-}
-
-pub fn init_cluster(
-    n: u64,
-    radius: f32,
-    center_x: f32,
-    center_y: f32,
-    vx0: f32,
-    vy0: f32,
-) -> ParticleSystem {
-    let n = n as usize;
-    let mut system = ParticleSystem::with_capacity(n);
-    system.resize(n);
-
-    let num_threads = current_num_threads();
-    let chunk_size = (n + num_threads - 1) / num_threads;
-
-    system.particles_mut().par_chunks_mut(chunk_size).enumerate().for_each(|(chunk_idx, chunk)| {
-        let _rng = StdRng::seed_from_u64(chunk_idx as u64);
-        chunk.par_iter_mut().enumerate().for_each(|(i, particle)| {
-            let seed = (chunk_idx as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(i as u64);
-            let mut local_rng = StdRng::seed_from_u64(seed);
-
-            let u1 = (local_rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
-
-            let u2 = (local_rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
-
-            let r = radius * (u1.sqrt() as f32);
-            let theta = (u2 as f32) * 2.0 * PI;
-
-            particle.x = r * theta.cos() + center_x;
-            particle.y = r * theta.sin() + center_y;
-            particle.vx = vx0;
-            particle.vy = vy0;
-        });
-    });
-
-    system
-}
-
-fn pow_fast(x: f32, e: f32) -> f32 {
-    const EPS: f32 = 1e-6;
-
-    if (e - 1.0).abs() < EPS {
-        x
-    } else if (e - 2.0).abs() < EPS {
-        x * x
-    } else if (e - 3.0).abs() < EPS {
-        x * x * x
-    } else if (e - 4.0).abs() < EPS {
-        let x2 = x * x;
-        x2 * x2
-    } else {
-        x.powf(e)
-    }
-}
-
-pub fn step(
-    system: &mut ParticleSystem,
-    dt: f32,
-    epsilon: f32,
-    a: f32,
-    b: f32,
-    n_exp: f32,
-    m_exp: f32,
-) {
-    if system.is_empty() {
-        return;
-    }
-
-    let inv_a = 1.0 / a;
-    let inv_b = 1.0 / b;
-    let eps2 = epsilon * epsilon;
-
-    system.particles_mut().par_chunks_mut(1024).for_each(|chunk| {
-        for particle in chunk {
-            let px = particle.x + particle.vx * dt;
-            let py = particle.y + particle.vy * dt;
-            let xna = px.abs() * inv_a;
-            let ynb = py.abs() * inv_b;
-            let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
-
-            if val <= 0.0 {
-                particle.x = px;
-                particle.y = py;
-                continue;
-            }
-
-            let sign_x = px.signum();
-            let sign_y = py.signum();
-
-            let xpow = pow_fast(px.abs() * inv_a, n_exp - 1.0);
-            let ypow = pow_fast(py.abs() * inv_b, m_exp - 1.0);
-
-            let df_dx = n_exp * inv_a * xpow * sign_x;
-            let df_dy = m_exp * inv_b * ypow * sign_y;
-            let len2 = df_dx * df_dx + df_dy * df_dy;
-
-            if len2 <= eps2 || len2 == 0.0 {
-                particle.x = px;
-                particle.y = py;
-                continue;
-            }
-
-            let inv_len = len2.sqrt().recip();
-
-            let nx = df_dx * inv_len;
-            let ny = df_dy * inv_len;
-
-            let vx = particle.vx;
-            let vy = particle.vy;
-            let vxn = vx * nx + vy * ny;
-
-            let rx = vx - 2.0 * vxn * nx;
-            let ry = vy - 2.0 * vxn * ny;
-
-            particle.vx = rx;
-            particle.vy = ry;
-            particle.x = px - rx * epsilon;
-            particle.y = py - ry * epsilon;
-        }
-    });
-}
-
-pub fn advance(
-    system: &mut ParticleSystem,
-    steps: u64,
-    dt: f32,
-    epsilon: f32,
-    a: f32,
-    b: f32,
-    n_exp: f32,
-    m_exp: f32,
-) {
-    (0..steps).for_each(|_| step(system, dt, epsilon, a, b, n_exp, m_exp));
-}
-
-pub struct VideoDirs {
-    pub video_dir: PathBuf,
-    pub frames_dir: PathBuf,
-    pub meta: Value,
-    pub start_frame: u64,
-}
-
-fn try_insert_numeric(name: &str, used_indices: &mut HashSet<u64>) {
-    if name.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(index) = name.parse::<u64>() {
-            used_indices.insert(index);
-        }
-    }
-}
-
-pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
-    let mp4_dir = Path::new("mp4");
-
-    if !mp4_dir.exists() {
-        create_dir_all(mp4_dir)?;
-        return Ok(1);
-    }
-
-    let mut used_indices = HashSet::new();
-
-    for entry in read_dir(mp4_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.extension().map_or(false, |ext| ext == "mp4") {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                try_insert_numeric(stem, &mut used_indices);
-            }
-        } else if path.is_dir() {
-            if let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) {
-                try_insert_numeric(dir_name, &mut used_indices);
-            }
-        }
-    }
-
-    for i in 1.. {
-        if !used_indices.contains(&i) {
-            return Ok(i);
-        }
-    }
-
-    Ok(1)
-}
-
-pub fn choose_video_index() -> Result<u64, Box<dyn Error>> {
-    println!("Enter video index (or Enter for next available): ");
-    let mut input = String::new();
-    stdin().read_line(&mut input)?;
-
-    let input = input.trim();
-
-    if input.is_empty() {
-        let index = next_available_index()?;
-        println!("Using next available index: {}", index);
-        Ok(index)
-    } else {
-        input.parse::<u64>().map_err(|e| e.into())
-    }
-}
-
-pub fn prepare_video_dirs_and_meta(
-    index: u64,
-    config: &Config,
-) -> Result<VideoDirs, Box<dyn Error>> {
-    let video_dir = Path::new("mp4").join(index.to_string());
-    let frames_dir = video_dir.join("frames");
-
-    create_dir_all(&frames_dir)?;
-
-    let meta_path = video_dir.join("meta.json");
-
-    let meta = if meta_path.exists() {
-        let meta_content = read_to_string(&meta_path)?;
-        from_str(&meta_content)?
-    } else {
-        let mut meta = Map::new();
-        meta.insert("constants".to_string(), config.constants());
-        meta.insert("date".to_string(), Value::String(Utc::now().to_rfc3339()));
-        meta.insert("last_frame".to_string(), Value::from(0));
-        meta.insert("compute_time".to_string(), Value::from(0.0));
-        meta.insert("resolution".to_string(), Value::from(config.res));
-        Object(meta)
-    };
-
-    let start_frame = meta.get("last_frame").and_then(Value::as_u64).unwrap_or(0);
-
-    Ok(VideoDirs { video_dir, frames_dir, meta, start_frame })
 }
 
 pub fn generate_video(
@@ -1294,4 +1113,185 @@ fn build_progress_msg(kv_map: &HashMap<String, String>) -> (String, bool) {
     let msg = parts_msg.join(" | ");
     let is_end = kv_map.get("progress").map(|p| p.trim() == "end").unwrap_or(false);
     (msg, is_end)
+}
+
+pub struct VideoDirs {
+    pub video_dir: PathBuf,
+    pub frames_dir: PathBuf,
+    pub meta: Value,
+    pub start_frame: u64,
+}
+
+fn try_insert_numeric(name: &str, used_indices: &mut HashSet<u64>) {
+    if name.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(index) = name.parse::<u64>() {
+            used_indices.insert(index);
+        }
+    }
+}
+
+pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
+    let mp4_dir = Path::new("mp4");
+
+    if !mp4_dir.exists() {
+        create_dir_all(mp4_dir)?;
+        return Ok(1);
+    }
+
+    let mut used_indices = HashSet::new();
+
+    for entry in read_dir(mp4_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().map_or(false, |ext| ext == "mp4") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                try_insert_numeric(stem, &mut used_indices);
+            }
+        } else if path.is_dir() {
+            if let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) {
+                try_insert_numeric(dir_name, &mut used_indices);
+            }
+        }
+    }
+
+    for i in 1.. {
+        if !used_indices.contains(&i) {
+            return Ok(i);
+        }
+    }
+
+    Ok(1)
+}
+
+pub fn choose_video_index() -> Result<u64, Box<dyn Error>> {
+    println!("Enter video index (or Enter for next available): ");
+    let mut input = String::new();
+    stdin().read_line(&mut input)?;
+
+    let input = input.trim();
+
+    if input.is_empty() {
+        let index = next_available_index()?;
+        println!("Using next available index: {}", index);
+        Ok(index)
+    } else {
+        input.parse::<u64>().map_err(|e| e.into())
+    }
+}
+
+pub fn prepare_video_dirs_and_meta(
+    index: u64,
+    config: &Config,
+) -> Result<VideoDirs, Box<dyn Error>> {
+    let video_dir = Path::new("mp4").join(index.to_string());
+    let frames_dir = video_dir.join("frames");
+
+    create_dir_all(&frames_dir)?;
+
+    let meta_path = video_dir.join("meta.json");
+
+    let meta = if meta_path.exists() {
+        let meta_content = read_to_string(&meta_path)?;
+        from_str(&meta_content)?
+    } else {
+        let mut meta = Map::new();
+        meta.insert("constants".to_string(), config.constants());
+        meta.insert("date".to_string(), Value::String(Utc::now().to_rfc3339()));
+        meta.insert("last_frame".to_string(), Value::from(0));
+        meta.insert("compute_time".to_string(), Value::from(0.0));
+        meta.insert("resolution".to_string(), Value::from(config.res));
+        Object(meta)
+    };
+
+    let start_frame = meta.get("last_frame").and_then(Value::as_u64).unwrap_or(0);
+
+    Ok(VideoDirs { video_dir, frames_dir, meta, start_frame })
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let program_start = Instant::now();
+    let config = Config::parse();
+    let n_frames = config.fps * config.duration_s;
+    let index = choose_video_index()?;
+    let dirs = prepare_video_dirs_and_meta(index, &config)?;
+
+    println!("\n--- Video Stats ---");
+
+    if let Some(map) = dirs.meta.as_object() {
+        for (key, value) in map {
+            if key != "constants" {
+                println!("{}: {}", key, value);
+            }
+        }
+    }
+
+    let entries: Vec<DirEntry> = read_dir(&dirs.frames_dir)?.collect::<Result<Vec<_>, _>>()?;
+
+    let (frame_count_res, total_size_bytes_res) = entries
+        .par_iter()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "png") {
+                match entry.metadata() {
+                    Ok(m) => Some((1u64, m.len())),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        })
+        .reduce(|| (0u64, 0u64), |a, b| (a.0 + b.0, a.1 + b.1));
+
+    let frame_count = frame_count_res;
+    let total_size_bytes = total_size_bytes_res;
+
+    println!("Frames saved: {}", frame_count);
+    println!("Date: {}", dirs.meta.get("date").unwrap_or(&Null));
+    println!("Total compute time: {}s", dirs.meta.get("compute_time").unwrap_or(&Value::from(0.0)));
+    println!("Video dir size: {:.2} MB", total_size_bytes as f64 / 1_000_000.0);
+    println!("Continue generating frames? (y/n): ");
+
+    let mut response = String::new();
+    stdin().read_line(&mut response)?;
+
+    if response.trim().to_lowercase() != "y" {
+        println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
+        return Ok(());
+    }
+
+    let sim_data = SimulationData::new(&config, dirs.start_frame);
+
+    println!("Running simulation...");
+
+    let start_time = Instant::now();
+    let output_path = format!("mp4/{}.mp4", index);
+
+    let compute_time = run_frame_generation(
+        sim_data,
+        &config,
+        n_frames,
+        dirs.start_frame,
+        &dirs.frames_dir,
+        &dirs.meta,
+        &output_path,
+        config.fps,
+        n_frames,
+    )?;
+
+    let total_compute_time =
+        dirs.meta.get("compute_time").and_then(|v| v.as_f64()).unwrap_or(0.0) + compute_time;
+
+    let mut updated_meta = dirs.meta.clone();
+    updated_meta["compute_time"] = Value::from(total_compute_time);
+    updated_meta["last_frame"] = Value::from(n_frames);
+    write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
+
+    println!("Video saved to `mp4/{}`", index);
+
+    let _total_elapsed = start_time.elapsed();
+
+    println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
+
+    Ok(())
 }
