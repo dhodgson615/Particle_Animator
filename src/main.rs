@@ -398,7 +398,6 @@ fn draw_boundary(
         });
 
         image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
-            let y = y;
             let base_row_idx = y * w;
             for x in 0..w {
                 let idx = base_row_idx + x;
