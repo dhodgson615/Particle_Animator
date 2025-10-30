@@ -270,26 +270,52 @@ pub fn histogram_edges(a: f32, b: f32, bins: u32, factor: f32) -> (Vec<f32>, Vec
     (x_edges, y_edges)
 }
 
+fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
+    let (width, height) = out_px;
+    let w = width as usize;
+    let h = height as usize;
+    let mut map = Vec::with_capacity(w * h);
+    for y in 0..h {
+        let bin_y = (y * bins) / h;
+        for x in 0..w {
+            let bin_x = (x * bins) / w;
+            let idx = bin_y * bins + bin_x;
+            map.push(idx);
+        }
+    }
+    map
+}
+
+fn precompute_thickness_offsets(thickness: usize) -> Vec<(i64, i64)> {
+    let r = thickness as i64;
+    let mut offs = Vec::new();
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx * dx + dy * dy <= r * r {
+                offs.push((dx, dy));
+            }
+        }
+    }
+    offs
+}
+
 pub fn compute_histogram(
     system: &ParticleSystem,
-    a: f32,
-    b: f32,
+    x_edges: &[f32],
+    y_edges: &[f32],
     bins: u32,
     pool: &ThreadPool,
 ) -> Vec<f32> {
     let bins_usize = bins as usize;
-    let factor = HISTOGRAM_FACTOR;
-    let (x_edges, y_edges) = histogram_edges(a, b, bins, factor);
-
     let x_min = x_edges[0];
-    let x_max = x_edges[bins_usize];
+    let x_max = *x_edges.last().unwrap_or(&x_min);
     let y_min = y_edges[0];
-    let y_max = y_edges[bins_usize];
+    let y_max = *y_edges.last().unwrap_or(&y_min);
 
     let dx = (x_max - x_min) / bins as f32;
     let dy = (y_max - y_min) / bins as f32;
-    let dx_inv = 1.0 / dx;
-    let dy_inv = 1.0 / dy;
+    let dx_inv = if dx != 0.0 { 1.0 / dx } else { 0.0 };
+    let dy_inv = if dy != 0.0 { 1.0 / dy } else { 0.0 };
 
     let total_bins = bins_usize * bins_usize;
 
@@ -418,10 +444,10 @@ fn draw_boundary(
     bresenham_px: &[(i64, i64)],
     width: u32,
     height: u32,
-    thickness: usize,
+    offsets: &[(i64, i64)],
     pool: &ThreadPool,
 ) {
-    if bresenham_px.is_empty() {
+    if bresenham_px.is_empty() || offsets.is_empty() {
         return;
     }
 
@@ -431,32 +457,22 @@ fn draw_boundary(
     let atoms: Vec<AtomicU32> = (0..total).map(|_| AtomicU32::new(0)).collect();
     let atoms = Arc::new(atoms);
 
-    let rad = thickness as i64;
-
     pool.install(|| {
         bresenham_px.par_iter().for_each(|&(lx, ly)| {
-            let px_min_i64 = (lx - rad).max(0);
-            let px_max_i64 = (lx + rad).min((w as i64) - 1);
-            let py_min_i64 = (ly - rad).max(0);
-            let py_max_i64 = (ly + rad).min((h as i64) - 1);
-
-            if px_min_i64 > px_max_i64 || py_min_i64 > py_max_i64 {
-                return;
-            }
-
-            let px_min = px_min_i64 as usize;
-            let px_max = px_max_i64 as usize;
-            let py_min = py_min_i64 as usize;
-            let py_max = py_max_i64 as usize;
-
             let atoms = atoms.clone();
-
-            (py_min..=py_max).into_par_iter().for_each(|pyu| {
-                let base_row = pyu * w;
-                (px_min..=px_max).into_par_iter().for_each(|pxu| {
-                    let idx = base_row + pxu;
-                    atoms[idx].store(1, Relaxed);
-                });
+            offsets.iter().for_each(|&(dx, dy)| {
+                let px = lx + dx;
+                let py = ly + dy;
+                if px < 0 || py < 0 {
+                    return;
+                }
+                let pxu = px as usize;
+                let pyu = py as usize;
+                if pxu >= w || pyu >= h {
+                    return;
+                }
+                let idx = pyu * w + pxu;
+                atoms[idx].store(1, Relaxed);
             });
         });
 
@@ -482,11 +498,11 @@ pub fn render(
     bres_pixels: &[(i64, i64)],
     palette: &[Vector3D<u8>],
     out_px: (u32, u32),
-    bins: u32,
     pool: &ThreadPool,
+    pixel_bin_map: &[usize],
+    thickness_offsets: &[(i64, i64)],
 ) -> RgbImage {
     let (width, height) = out_px;
-    let bins = bins as usize;
 
     let (vmin, vmax) = pool.install(|| {
         hist.par_chunks(1024)
@@ -529,16 +545,15 @@ pub fn render(
 
     let mut image = RgbImage::new(width, height);
 
+    let w = width as usize;
+
     pool.install(|| {
         image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
-            let bin_y = (y * bins) / height as usize;
-
+            let row_base = y * w;
             for x in 0..width as usize {
-                let bin_x = (x * bins) / width as usize;
-                let small_idx = bin_y * bins + bin_x;
+                let small_idx = pixel_bin_map[row_base + x];
                 let [r, g, b] = small[small_idx];
                 let base = x * 3;
-
                 if base + 2 < row.len() {
                     row[base] = r;
                     row[base + 1] = g;
@@ -548,8 +563,7 @@ pub fn render(
         });
     });
 
-    let thickness = BOUNDARY_THICKNESS;
-    draw_boundary(&mut image, bres_pixels, width, height, thickness, pool);
+    draw_boundary(&mut image, bres_pixels, width, height, thickness_offsets, pool);
 
     image
 }
@@ -853,6 +867,8 @@ pub struct SimulationData {
     pub sim_pool: Arc<ThreadPool>,
     pub render_pool: Arc<ThreadPool>,
     pub boundary_pixels: Arc<Vec<(i64, i64)>>,
+    pub pixel_bin_map: Arc<Vec<usize>>,
+    pub thickness_offsets: Arc<Vec<(i64, i64)>>,
 }
 
 impl SimulationData {
@@ -887,6 +903,9 @@ impl SimulationData {
         let boundary_pixels =
             Arc::new(precompute_boundary_pixels(&bx, &by, &x_edges, &y_edges, out_px, sample_n));
 
+        let pixel_bin_map = Arc::new(precompute_pixel_bin_map(out_px, config.res as usize));
+        let thickness_offsets = Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
+
         let mut system = init_cluster(
             config.n_particles,
             config.radius,
@@ -919,6 +938,8 @@ impl SimulationData {
             sim_pool,
             render_pool,
             boundary_pixels,
+            pixel_bin_map,
+            thickness_offsets,
         }
     }
 }
@@ -1027,8 +1048,8 @@ pub fn run_frame_generation(
 
             let hist = compute_histogram(
                 &sim_data.system,
-                config.a,
-                config.b,
+                &sim_data.x_edges,
+                &sim_data.y_edges,
                 config.res,
                 &sim_data.sim_pool,
             );
@@ -1044,8 +1065,9 @@ pub fn run_frame_generation(
                 &sim_data.boundary_pixels,
                 &sim_data.palette,
                 (width, height),
-                config.res,
                 &sim_data.render_pool,
+                &sim_data.pixel_bin_map,
+                &sim_data.thickness_offsets,
             );
 
             if let Err(e) = tx.send(frame_image) {
