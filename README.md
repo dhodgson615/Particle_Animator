@@ -160,6 +160,3 @@ You can inspect `meta.json` to see the constants used for the run and the `last_
 - A 2D histogram over the simulation domain is computed and then converted to an RGB image using a wavelength-like spectral palette.
 
 - Rayon is used for compute parallelism, and a small set of saver threads write images to disk to reduce blocking on I/O.
-
-
----
