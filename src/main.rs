@@ -49,6 +49,11 @@ const RES: u32 = 256;
 const DPI: u32 = 300;
 const HISTOGRAM_FACTOR: f32 = 1.2;
 
+const SHAPE_SAMPLE_POINTS: usize = 400;
+const SEED_MULTIPLIER: u64 = 0x9E3779B97F4A7C15;
+const FIG_INCHES: f32 = 8.0;
+const BOUNDARY_THICKNESS: usize = 2;
+
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[clap(long, default_value_t = A)]
@@ -524,7 +529,7 @@ pub fn render(
         sampled_pts.push((x, y));
     }
 
-    let thickness = 2usize;
+    let thickness = BOUNDARY_THICKNESS;
     draw_boundary(&mut image, &sampled_pts, width, height, thickness, pool);
 
     image
@@ -699,7 +704,7 @@ pub fn init_cluster(
     pool.install(|| {
         system.particles_mut().par_chunks_mut(chunk_size).enumerate().for_each(
             |(chunk_idx, chunk)| {
-                let seed_base = (chunk_idx as u64).wrapping_mul(0x9E3779B97F4A7C15);
+                let seed_base = (chunk_idx as u64).wrapping_mul(SEED_MULTIPLIER);
                 let mut rng = StdRng::seed_from_u64(seed_base);
 
                 for particle in chunk.iter_mut() {
@@ -752,7 +757,8 @@ impl SimulationData {
 
         let palette = Arc::new(build_palette());
 
-        let (bx, by) = shape_boundary(config.a, config.b, config.n_exp, config.m_exp, 400);
+        let (bx, by) =
+            shape_boundary(config.a, config.b, config.n_exp, config.m_exp, SHAPE_SAMPLE_POINTS);
 
         let (x_edges, y_edges) = histogram_edges(config.a, config.b, config.res, HISTOGRAM_FACTOR);
 
@@ -794,8 +800,7 @@ impl SimulationData {
 }
 
 fn compute_out_px(dpi: u32) -> (u32, u32) {
-    let fig_inches = 8.0;
-    let size = (fig_inches * dpi as f32).round() as u32;
+    let size = (FIG_INCHES * dpi as f32).round() as u32;
     (size, size)
 }
 
@@ -1307,13 +1312,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
         .reduce(|| (0u64, 0u64), |a, b| (a.0 + b.0, a.1 + b.1));
 
-    let frame_count = frame_count_res;
-    let total_size_bytes = total_size_bytes_res;
-
-    println!("Frames saved: {}", frame_count);
+    println!("Frames saved: {}", frame_count_res);
     println!("Date: {}", dirs.meta.get("date").unwrap_or(&Null));
     println!("Total compute time: {}s", dirs.meta.get("compute_time").unwrap_or(&Value::from(0.0)));
-    println!("Video dir size: {:.2} MB", total_size_bytes as f64 / 1_000_000.0);
+    println!("Video dir size: {:.2} MB", total_size_bytes_res as f64 / 1_000_000.0);
     println!("Continue generating frames? (y/n): ");
 
     let mut response = String::new();
