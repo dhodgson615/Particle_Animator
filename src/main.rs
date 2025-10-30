@@ -354,15 +354,74 @@ fn bresenham_points(mut x0: i64, mut y0: i64, x1: i64, y1: i64) -> Vec<(i64, i64
     pts
 }
 
+fn precompute_boundary_pixels(
+    bx: &[f32],
+    by: &[f32],
+    x_edges: &[f32],
+    y_edges: &[f32],
+    out_px: (u32, u32),
+    sample_n: usize,
+) -> Vec<(i64, i64)> {
+    use ahash::AHashSet;
+
+    let (width, height) = out_px;
+    let bins = sample_n.max(3);
+    let x_span = (x_edges.last().cloned().unwrap_or(0.0) - x_edges[0]).abs().max(1e-6);
+    let y_span = (y_edges.last().cloned().unwrap_or(0.0) - y_edges[0]).abs().max(1e-6);
+
+    let orig_n = bx.len().max(1);
+    let mut sampled_pts: Vec<(i64, i64)> = Vec::with_capacity(bins);
+    for k in 0..bins {
+        let idxf = (k as f32) * (orig_n as f32) / (bins as f32);
+        let i0 = idxf.floor() as usize % orig_n;
+        let i1 = (i0 + 1) % orig_n;
+        let frac = idxf - idxf.floor();
+        let bx_val = bx[i0] * (1.0 - frac) + bx[i1] * frac;
+        let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
+
+        let mut x = ((bx_val - x_edges[0]) / x_span * (width - 1) as f32).round() as i64;
+        let mut y = height as i64
+            - 1
+            - ((by_val - y_edges[0]) / y_span * (height - 1) as f32).round() as i64;
+
+        if x < 0 {
+            x = 0
+        }
+        if y < 0 {
+            y = 0
+        }
+        if x >= width as i64 {
+            x = (width - 1) as i64
+        }
+        if y >= height as i64 {
+            y = (height - 1) as i64
+        }
+
+        sampled_pts.push((x, y));
+    }
+
+    let mut set: AHashSet<(i64, i64)> = AHashSet::new();
+    for i in 0..sampled_pts.len() {
+        let a = sampled_pts[i];
+        let b = sampled_pts[(i + 1) % sampled_pts.len()];
+        let line_pts = bresenham_points(a.0, a.1, b.0, b.1);
+        for p in line_pts {
+            set.insert(p);
+        }
+    }
+
+    set.into_iter().collect()
+}
+
 fn draw_boundary(
     image: &mut RgbImage,
-    points: &[(i64, i64)],
+    bresenham_px: &[(i64, i64)],
     width: u32,
     height: u32,
     thickness: usize,
     pool: &ThreadPool,
 ) {
-    if points.is_empty() {
+    if bresenham_px.is_empty() {
         return;
     }
 
@@ -375,33 +434,28 @@ fn draw_boundary(
     let rad = thickness as i64;
 
     pool.install(|| {
-        (0..points.len()).into_par_iter().for_each(|i| {
-            let (x0, y0) = points[i];
-            let (x1, y1) = points[(i + 1) % points.len()];
-            let line_pts = bresenham_points(x0, y0, x1, y1);
+        bresenham_px.par_iter().for_each(|&(lx, ly)| {
+            let px_min_i64 = (lx - rad).max(0);
+            let px_max_i64 = (lx + rad).min((w as i64) - 1);
+            let py_min_i64 = (ly - rad).max(0);
+            let py_max_i64 = (ly + rad).min((h as i64) - 1);
 
-            line_pts.into_par_iter().for_each(|(lx, ly)| {
-                let px_min_i64 = (lx - rad).max(0);
-                let px_max_i64 = (lx + rad).min((w as i64) - 1);
-                let py_min_i64 = (ly - rad).max(0);
-                let py_max_i64 = (ly + rad).min((h as i64) - 1);
+            if px_min_i64 > px_max_i64 || py_min_i64 > py_max_i64 {
+                return;
+            }
 
-                if px_min_i64 > px_max_i64 || py_min_i64 > py_max_i64 {
-                    return;
-                }
+            let px_min = px_min_i64 as usize;
+            let px_max = px_max_i64 as usize;
+            let py_min = py_min_i64 as usize;
+            let py_max = py_max_i64 as usize;
 
-                let px_min = px_min_i64 as usize;
-                let px_max = px_max_i64 as usize;
-                let py_min = py_min_i64 as usize;
-                let py_max = py_max_i64 as usize;
+            let atoms = atoms.clone();
 
-                let atoms = atoms.clone();
-                (py_min..=py_max).into_par_iter().for_each(|pyu| {
-                    let base_row = pyu * w;
-                    (px_min..=px_max).into_par_iter().for_each(|pxu| {
-                        let idx = base_row + pxu;
-                        atoms[idx].store(1, Relaxed);
-                    });
+            (py_min..=py_max).into_par_iter().for_each(|pyu| {
+                let base_row = pyu * w;
+                (px_min..=px_max).into_par_iter().for_each(|pxu| {
+                    let idx = base_row + pxu;
+                    atoms[idx].store(1, Relaxed);
                 });
             });
         });
@@ -425,10 +479,7 @@ fn draw_boundary(
 
 pub fn render(
     hist: &[f32],
-    x_edges: &[f32],
-    y_edges: &[f32],
-    bx: &[f32],
-    by: &[f32],
+    bres_pixels: &[(i64, i64)],
     palette: &[Vector3D<u8>],
     out_px: (u32, u32),
     bins: u32,
@@ -497,45 +548,8 @@ pub fn render(
         });
     });
 
-    let x_span = (x_edges[bins] - x_edges[0]).abs().max(1e-6);
-    let y_span = (y_edges[bins] - y_edges[0]).abs().max(1e-6);
-
-    let orig_n = bx.len().max(1);
-    let sample_n = bins.max(3);
-    let mut sampled_pts: Vec<(i64, i64)> = Vec::with_capacity(sample_n);
-
-    for k in 0..sample_n {
-        let idxf = (k as f32) * (orig_n as f32) / (sample_n as f32);
-        let i0 = idxf.floor() as usize % orig_n;
-        let i1 = (i0 + 1) % orig_n;
-        let frac = idxf - idxf.floor();
-        let bx_val = bx[i0] * (1.0 - frac) + bx[i1] * frac;
-        let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
-
-        let mut x = ((bx_val - x_edges[0]) / x_span * (width - 1) as f32).round() as i64;
-
-        let mut y = height as i64
-            - 1
-            - ((by_val - y_edges[0]) / y_span * (height - 1) as f32).round() as i64;
-
-        if x < 0 {
-            x = 0
-        }
-        if y < 0 {
-            y = 0
-        }
-        if x >= width as i64 {
-            x = (width - 1) as i64
-        }
-        if y >= height as i64 {
-            y = (height - 1) as i64
-        }
-
-        sampled_pts.push((x, y));
-    }
-
     let thickness = BOUNDARY_THICKNESS;
-    draw_boundary(&mut image, &sampled_pts, width, height, thickness, pool);
+    draw_boundary(&mut image, bres_pixels, width, height, thickness, pool);
 
     image
 }
@@ -838,6 +852,7 @@ pub struct SimulationData {
     pub y_edges: Arc<Vec<f32>>,
     pub sim_pool: Arc<ThreadPool>,
     pub render_pool: Arc<ThreadPool>,
+    pub boundary_pixels: Arc<Vec<(i64, i64)>>,
 }
 
 impl SimulationData {
@@ -866,6 +881,11 @@ impl SimulationData {
             shape_boundary(config.a, config.b, config.n_exp, config.m_exp, SHAPE_SAMPLE_POINTS);
 
         let (x_edges, y_edges) = histogram_edges(config.a, config.b, config.res, HISTOGRAM_FACTOR);
+
+        let out_px = compute_out_px(config.dpi);
+        let sample_n = (config.res as usize).max(3);
+        let boundary_pixels =
+            Arc::new(precompute_boundary_pixels(&bx, &by, &x_edges, &y_edges, out_px, sample_n));
 
         let mut system = init_cluster(
             config.n_particles,
@@ -898,6 +918,7 @@ impl SimulationData {
             y_edges: Arc::new(y_edges),
             sim_pool,
             render_pool,
+            boundary_pixels,
         }
     }
 }
@@ -1020,10 +1041,7 @@ pub fn run_frame_generation(
 
             let frame_image = render(
                 &h_log_flat,
-                &sim_data.x_edges,
-                &sim_data.y_edges,
-                &sim_data.bx,
-                &sim_data.by,
+                &sim_data.boundary_pixels,
                 &sim_data.palette,
                 (width, height),
                 config.res,
