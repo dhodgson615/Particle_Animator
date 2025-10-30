@@ -47,6 +47,7 @@ const DURATION_S: u64 = 10;
 const STEPS_PER_FRAME: u64 = 30;
 const RES: u32 = 256;
 const DPI: u32 = 300;
+const HISTOGRAM_FACTOR: f32 = 1.2;
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -180,7 +181,6 @@ fn rgb_from_wavelength(wl: f32, gamma: f32) -> Vec3 {
         let t = (wl - 580.0) / 65.0;
         (1.0, (-t + 1.0).clamp(0.0, 1.0), 0.0)
     } else if (645.0..=750.0).contains(&wl) {
-        let _t = (wl - 645.0) / 105.0;
         (1.0, 0.0, 0.0)
     } else {
         (0.0, 0.0, 0.0)
@@ -265,7 +265,7 @@ pub fn compute_histogram(
     pool: &ThreadPool,
 ) -> Vec<f32> {
     let bins_usize = bins as usize;
-    let factor = 1.2;
+    let factor = HISTOGRAM_FACTOR;
     let (x_edges, y_edges) = histogram_edges(a, b, bins, factor);
 
     let x_min = x_edges[0];
@@ -426,7 +426,6 @@ pub fn render(
 ) -> RgbImage {
     let (width, height) = out_px;
     let bins = bins as usize;
-    let _total_bins = bins * bins;
 
     let (vmin, vmax) = pool.install(|| {
         hist.par_chunks(1024)
@@ -544,9 +543,15 @@ pub struct ParticleSystem {
     particles: Vec<Particle>,
 }
 
+impl Default for ParticleSystem {
+    fn default() -> Self {
+        Self { particles: Vec::new() }
+    }
+}
+
 impl ParticleSystem {
     pub fn new() -> Self {
-        Self { particles: Vec::new() }
+        Self::default()
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
@@ -694,15 +699,12 @@ pub fn init_cluster(
     pool.install(|| {
         system.particles_mut().par_chunks_mut(chunk_size).enumerate().for_each(
             |(chunk_idx, chunk)| {
-                let _rng = StdRng::seed_from_u64(chunk_idx as u64);
-                chunk.par_iter_mut().enumerate().for_each(|(i, particle)| {
-                    let seed =
-                        (chunk_idx as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(i as u64);
-                    let mut local_rng = StdRng::seed_from_u64(seed);
+                let seed_base = (chunk_idx as u64).wrapping_mul(0x9E3779B97F4A7C15);
+                let mut rng = StdRng::seed_from_u64(seed_base);
 
-                    let u1 = (local_rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
-
-                    let u2 = (local_rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
+                for particle in chunk.iter_mut() {
+                    let u1 = (rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
+                    let u2 = (rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
 
                     let r = radius * (u1.sqrt() as f32);
                     let theta = (u2 as f32) * 2.0 * PI;
@@ -711,7 +713,7 @@ pub fn init_cluster(
                     particle.y = r * theta.sin() + center_y;
                     particle.vx = vx0;
                     particle.vy = vy0;
-                });
+                }
             },
         );
     });
@@ -752,7 +754,7 @@ impl SimulationData {
 
         let (bx, by) = shape_boundary(config.a, config.b, config.n_exp, config.m_exp, 400);
 
-        let (x_edges, y_edges) = histogram_edges(config.a, config.b, config.res, 1.2);
+        let (x_edges, y_edges) = histogram_edges(config.a, config.b, config.res, HISTOGRAM_FACTOR);
 
         let mut system = init_cluster(
             config.n_particles,
@@ -809,6 +811,8 @@ pub fn run_frame_generation(
     _total_frames: u64,
 ) -> Result<f64, Box<dyn Error>> {
     let (width, height) = compute_out_px(config.dpi);
+
+    let start_time = Instant::now();
 
     let total_to_generate = if n_frames > start_frame { n_frames - start_frame } else { 0 };
 
@@ -877,15 +881,13 @@ pub fn run_frame_generation(
                 if let Err(e) =
                     PngEncoder::new(&mut writer).write_image(&raw, width, height, Rgb8.into())
                 {
-                    let _ = eprintln!("ffmpeg stdin write error: {}", e);
+                    eprintln!("ffmpeg stdin write error: {}", e);
                     break;
                 }
                 let _ = writer.flush();
             }
             drop(writer);
         });
-
-        let start_time = Instant::now();
 
         for _frame_idx in start_frame..n_frames {
             advance(
@@ -938,7 +940,6 @@ pub fn run_frame_generation(
 
         drop(tx);
         let _ = writer_handle.join();
-        let _ = start_time;
         Ok(())
     })?;
 
@@ -988,7 +989,7 @@ pub fn run_frame_generation(
     spinner.finish_and_clear();
     pb.finish_with_message("Frame generation complete");
 
-    let elapsed = Instant::now().elapsed().as_secs_f64();
+    let elapsed = start_time.elapsed().as_secs_f64();
 
     Ok(elapsed)
 }
@@ -1044,9 +1045,7 @@ pub fn generate_video(
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let total = total_frames;
     let mut last_msg = String::new();
-    let mut _seen_end = false;
 
     for line_res in reader.lines() {
         let line = line_res?;
@@ -1064,7 +1063,6 @@ pub fn generate_video(
         }
 
         if is_end {
-            _seen_end = true;
             break;
         }
     }
@@ -1073,7 +1071,7 @@ pub fn generate_video(
 
     spinner.finish_and_clear();
 
-    let final_pb = ProgressBar::new(total);
+    let final_pb = ProgressBar::new(total_frames);
 
     final_pb.set_style(
         ProgressStyle::default_bar()
@@ -1083,7 +1081,7 @@ pub fn generate_video(
     );
 
     final_pb.set_prefix("Generating video");
-    final_pb.set_position(total);
+    final_pb.set_position(total_frames);
     final_pb.finish_with_message("Video generation complete");
 
     if !status.success() {
@@ -1330,7 +1328,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Running simulation...");
 
-    let start_time = Instant::now();
     let output_path = format!("mp4/{}.mp4", index);
 
     let compute_time = run_frame_generation(
@@ -1354,9 +1351,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
 
     println!("Video saved to `mp4/{}`", index);
-
-    let _total_elapsed = start_time.elapsed();
-
     println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
 
     Ok(())
