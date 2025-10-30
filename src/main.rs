@@ -1,8 +1,8 @@
 use ColorType::Rgb8;
 use Value::Object;
+use ahash::{AHashMap, AHashSet};
 use chrono::Utc;
 use clap::Parser;
-use collections::HashMap;
 use crossbeam_channel::bounded;
 use image::{ColorType, ImageEncoder, RgbImage, codecs::png::PngEncoder};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -16,7 +16,6 @@ use serde_json::{
     from_str, json, to_string_pretty,
 };
 use std::{
-    collections::{self, HashSet},
     error::Error,
     f32::consts::PI,
     fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
@@ -1135,8 +1134,8 @@ fn size_to_bytes(s: &str) -> Option<u64> {
     None
 }
 
-fn parse_kv_from_parts(parts: &[&str]) -> HashMap<String, String> {
-    let mut kv_map = HashMap::new();
+fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
+    let mut kv_map: AHashMap<String, String> = AHashMap::new();
     let mut i = 0;
 
     while i < parts.len() {
@@ -1156,7 +1155,7 @@ fn parse_kv_from_parts(parts: &[&str]) -> HashMap<String, String> {
     kv_map
 }
 
-fn build_progress_msg(kv_map: &HashMap<String, String>) -> (String, bool) {
+fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
     let mut parts_msg = Vec::new();
 
     if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) {
@@ -1182,14 +1181,7 @@ fn build_progress_msg(kv_map: &HashMap<String, String>) -> (String, bool) {
     (msg, is_end)
 }
 
-pub struct VideoDirs {
-    pub video_dir: PathBuf,
-    pub frames_dir: PathBuf,
-    pub meta: Value,
-    pub start_frame: u64,
-}
-
-fn try_insert_numeric(name: &str, used_indices: &mut HashSet<u64>) {
+fn try_insert_numeric(name: &str, used_indices: &mut AHashSet<u64>) {
     if name.chars().all(|c| c.is_ascii_digit()) {
         if let Ok(index) = name.parse::<u64>() {
             used_indices.insert(index);
@@ -1205,7 +1197,7 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
         return Ok(1);
     }
 
-    let mut used_indices = HashSet::new();
+    let mut used_indices: AHashSet<u64> = AHashSet::new();
 
     for entry in read_dir(mp4_dir)? {
         let entry = entry?;
@@ -1274,6 +1266,13 @@ pub fn prepare_video_dirs_and_meta(
     let start_frame = meta.get("last_frame").and_then(Value::as_u64).unwrap_or(0);
 
     Ok(VideoDirs { video_dir, frames_dir, meta, start_frame })
+}
+
+pub struct VideoDirs {
+    pub video_dir: PathBuf,
+    pub frames_dir: PathBuf,
+    pub meta: Value,
+    pub start_frame: u64,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
