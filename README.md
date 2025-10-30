@@ -1,162 +1,103 @@
 # ParticleAnimatorRust
 
-A high-performance particle simulator and renderer written in Rust. The program simulates particles moving inside a parametric boundary, accumulates a 2D histogram of particle density, renders frames as PNG images, and uses `ffmpeg` to encode the frames to an MP4 video.
+A high-performance particle simulator and renderer written in Rust. The program simulates particles moving inside a parametric (super-ellipse style) boundary, accumulates a 2D histogram of particle density per frame, rasterizes frames to PNG images and streams them into `ffmpeg` (image2pipe) to encode MP4 video. Runs are resumable and metadata for each run is stored in `mp4/<index>/meta.json`.
 
----
+## Overview
 
-## Features
+- Simulates many particles inside a parametric boundary and reflects particles at the implicit boundary.
+- Per-frame particle positions are accumulated into a 2D histogram (density) which is mapped to a spectral palette and rasterized.
+- PNG frames are written to ffmpeg stdin (image2pipe) on worker threads, and ffmpeg encodes the MP4.
+- Resume capability: each run writes `mp4/<index>/meta.json` and can resume from `last_frame`.
+- Heavy parallelization: per-task Rayon ThreadPools, per-thread buffers, and performance-oriented crates (ahash, parking_lot).
 
-- Parallel simulation and rendering using Rayon.
-- Histogram-based rendering with a spectral palette.
-- Multithreaded image saving (worker threads) to avoid blocking the renderer.
-- Resume capability: existing `meta.json` under a video directory is used to continue generation from the last saved frame.
-- Produces a PNG sequence (frames) and encodes the sequence to MP4 via `ffmpeg`.
+## Build (prerequisites)
 
----
-
-## Prerequisites
-
-- Rust toolchain (stable). Install from https://rustup.rs if you don't have it.
-- `ffmpeg` (available on PATH) for encoding frames into MP4. On macOS you can install with Homebrew: `brew install ffmpeg`.
-- Enough disk space for frame sequences (frames are saved as PNG files before encoding).
-
----
-
-## Build
-
-Build the release binary for best performance:
-
-```bash
-cargo build --release
-```
-
-Or run directly from Cargo (slower due to debug profile):
-
-```bash
-cargo run --release -- [flags]
-```
-
-The produced release binary is available at `target/release/ParticleAnimatorRust`.
-
----
+- Rust (stable) toolchain — install via https://rustup.rs.
+- `ffmpeg` on PATH for encoding frames into MP4 (`ffmpeg -version` to verify).
+- Build release binary for best performance:
+  cargo build --release
 
 ## Run / Usage
 
-When you run the program it will prompt for a video index. Press Enter to use the next available index (the program will create `mp4/<index>/frames` and a `meta.json`), or type a specific numeric index to use an existing directory.
+- On start the program prompts for a video index:
+  - Press Enter to use the next available index (creates `mp4/<index>/frames` and `mp4/<index>.mp4`).
+  - Or type a numeric index to use or resume an existing directory.
+- Example invocations:
+  - cargo run --release --
+  - Quick test (fewer particles, lower res):
+    cargo run --release -- --n-particles 2000 --res 128 --duration-s 4 --fps 24
+  - Full quality render:
+    cargo run --release -- --n-particles 20000 --res 512 --duration-s 20 --fps 60
+- The program streams PNG frames into ffmpeg via stdin; the final MP4 is written to `mp4/<index>.mp4`.
 
-Example (interactive):
+### CLI flags (defaults shown)
 
-```bash
-# Build then run with defaults
-cargo run --release --
+- --a <f32> (default: 2.5)
+- --b <f32> (default: 1.0)
+- --n-exp <f32> (default: 4.0)
+- --m-exp <f32> (default: 3.0)
+- --n-particles <u64> (default: 10000)
+- --dt <f32> (default: 0.001)
+- --epsilon <f32> (default: 1e-8)
+- --center-x <f32> (default: 0.75)
+- --center-y <f32> (default: 0.25)
+- --radius <f32> (default: 0.5)
+- --vx0 <f32> (default: 3.0)
+- --vy0 <f32> (default: 0.0)
+- --fps <u64> (default: 60)
+- --duration-s <u64> (default: 10)
+- --steps-per-frame <u64> (default: 30)
+- --res <u32> (default: 256) — histogram bins per dimension
+- --dpi <u32> (default: 300) — output DPI; output image size (px) = FIG_INCHES * DPI (FIG_INCHES is 8.0 by default)
+- --video-filename <string> (optional) — stored in meta.json but the binary saves to `mp4/<index>.mp4` by default
 
-# Run with custom options (example: reduce particles and resolution for quick testing)
-cargo run --release -- --n-particles 2000 --res 128 --duration-s 5 --fps 30
-```
+### Resume behavior and output layout
 
-You can also run the built binary directly:
+- Metadata is stored at: `mp4/<index>/meta.json`. Important fields:
+  - `constants` — run parameters (Config constants).
+  - `date` — run start time.
+  - `last_frame` — last completed frame index (used for resuming).
+  - `compute_time` — cumulative compute time (seconds).
+  - `resolution` — histogram resolution (`res`).
+- When resuming, the simulation state is advanced by `last_frame * steps_per_frame` steps before generating new frames.
+- Output layout:
+  - mp4/
+    - <index>/
+      - frames/ — optional saved PNG frames (useful for debugging)
+      - meta.json — run metadata
+    - <index>.mp4 — final encoded MP4 in the project root `mp4/`
 
-```bash
-./target/release/ParticleAnimatorRust --fps 60 --duration-s 10
-```
+## Performance & tuning notes
 
-After frames are generated the program will call `ffmpeg` to encode `mp4/<index>.mp4` from the produced frame sequence.
-
-Note: The program saves frames to `mp4/<index>/frames/<frame>.png` and writes `mp4/<index>/meta.json` with run metadata and constants; the final encoded video is written to `mp4/<index>.mp4`.
-
----
-
-## CLI flags
-
-The program exposes a set of long-form flags (clap-derived). Below are the available flags and their default values (defaults come from constants in the source):
-
-- `--a <f32> (default: 2.5)`
-- `--b <f32> (default: 1.0)`
-- `--n-exp <f32> (default: 4.0)`
-- `--m-exp <f32> (default: 3.0)`
-- `--n-particles <u64> (default: 10000)`
-- `--dt <f32> (default: 0.001)`
-- `--epsilon <f32> (default: 1e-8)`
-- `--center-x <f32> (default: 0.75)`
-- `--center-y <f32> (default: 0.25)`
-- `--radius <f32> (default: 0.5)`
-- `--vx0 <f32> (default: 3.0)`
-- `--vy0 <f32> (default: 0.0)`
-- `--fps <u64> (default: 60)`
-- `--duration-s <u64> (default: 10)`
-- `--steps-per-frame <u64> (default: 30)`
-- `--res <u32> (default: 256)           # histogram bins per dimension`
-- `--dpi <u32> (default: 300)           # output image DPI (affects image pixel size)`
-- `--video-filename <string> (optional) # included in meta, not currently used as output path`
-
-Examples:
-
-```bash
-# Generate a short, low-res preview (fast)
-cargo run --release -- --n-particles 2000 --res 128 --duration-s 4 --fps 24
-
-# Full quality render
-cargo run --release -- --n-particles 20000 --res 512 --duration-s 20 --fps 60
-```
-
----
-
-## How resume works
-
-- When you supply a numeric index or press Enter to use the next available index, the program creates (or opens) `mp4/<index>/meta.json`.
-- If `meta.json` exists and contains a `last_frame` entry, the simulator will advance the internal system by `last_frame * steps_per_frame` and then continue generating frames from that frame index, so you can resume an interrupted run.
-
----
-
-## Output layout
-
-- `mp4/` - root output directory
-  - `<index>/` - per-run directory created by the program
-    - `frames/` - PNG frames written here (named `<frame>.png`)
-    - `meta.json` - JSON with run metadata and constants
-  - `<index>.mp4` - final encoded MP4 written to the `mp4/` root
-
-You can inspect `meta.json` to see the constants used for the run and the `last_frame` and `compute_time` fields.
-
----
-
-## Performance notes & tuning
-
-- The program is heavily parallelized using Rayon for CPU-bound work. To control the number of threads used by Rayon, set the environment variable `RAYON_NUM_THREADS` or use the `RAYON_NUM_THREADS` mechanism appropriate for your environment.
-
-- Build with `--release` to get optimized code and better performance.
-
-- To speed up a run for experimentation, reduce:
-  - `--n-particles` (fewer particles)
-  - `--res` (fewer histogram bins)
-  - `--steps-per-frame` (fewer internal steps per frame)
-  - `--fps` or `--duration-s` (fewer total frames)
-
-- Frames are written as PNGs before encoding. For long runs you may need hundreds or thousands of PNGs. Remove or compress old runs if disk space is a concern.
-
----
+- The program creates dedicated Rayon ThreadPools for simulation and rendering (sized from detected CPU count) to improve locality and throughput.
+- Per-thread buffers reduce contention (fewer atomics) and are reduced/merged after accumulation.
+- To speed experiments: reduce `--n-particles`, `--res`, `--steps-per-frame`, or `--fps`/`--duration-s`.
+- Build with --release for best performance.
 
 ## Troubleshooting
 
-- `ffmpeg` not found or errors during encoding:
-  - Ensure `ffmpeg` is installed and available on your PATH.
-  - Run `ffmpeg -version` to verify installation.
+- ffmpeg errors / missing:
+  - Ensure `ffmpeg` is installed and on PATH: `ffmpeg -version`.
+- Permissions writing to `mp4/`:
+  - Ensure the process has write permission to the project directory.
+- Out-of-memory or crashes:
+  - Reduce particles, resolution, or steps-per-frame; run fewer threads or smaller pools.
+- If encoder fails:
+  - Check ffmpeg stderr (run without `-loglevel error` or capture logs).
 
-- Permission errors writing to `mp4/`:
-  - Ensure you have write permissions in the project directory.
+## Developer notes (internals)
 
-- Out of memory or poor performance:
-  - Reduce particle count, resolution, or run shorter durations.
-  - Ensure other heavy processes aren't contending for CPU.
+- Particle state stored as contiguous Vec<Particle> (x, y, vx, vy).
+- Simulation steps:
+  - `step` advances positions and applies implicit-boundary reflection using analytic normal computation.
+  - `advance` calls `step` repeatedly for steps_per_frame.
+- Histogram:
+  - Implemented as per-thread AtomicU32 buffers that are merged into a final histogram and converted to f32 for rendering.
+- Rendering:
+  - Histogram values are log-scaled and mapped to a spectral palette; boundary is rasterized using a Bresenham iterator and drawn as white pixels.
+- IO:
+  - Frames are encoded to PNG and streamed into an ffmpeg child process via stdin (image2pipe).
+- Progress:
+  - The program parses ffmpeg progress lines to display an on-screen spinner/progress.
 
-- If an interrupted run produced partial frames, you can resume by reusing the same numeric index; the program will detect `last_frame` in metadata and continue rendering from that frame.
-
----
-
-## Internals
-
-- Particles are stored in a contiguous `Vec<Particle>`. The `step` function advances particle positions, checks against an implicit parametric boundary, and reflects velocities when particles hit the boundary.
-
-- A 2D histogram over the simulation domain is computed and then converted to an RGB image using a wavelength-like spectral palette.
-
-- Rayon is used for compute parallelism, and a small set of saver threads write images to disk to reduce blocking on I/O.
+If you want the README focused on a specific subsystem (rendering, histogram, threading, or build flags), tell me which and I will add a concise focused section.
