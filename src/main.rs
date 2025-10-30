@@ -1,18 +1,17 @@
-use ColorType::Rgb8;
-use Value::Object;
 use ahash::{AHashMap, AHashSet};
 use chrono::Utc;
 use clap::Parser;
 use crossbeam_channel::bounded;
-use image::{ColorType, ImageEncoder, RgbImage, codecs::png::PngEncoder};
+use image::RgbImage;
 use indicatif::{ProgressBar, ProgressStyle};
+use mimalloc::MiMalloc;
 use num_cpus;
-use rand::{RngCore, SeedableRng, prelude::StdRng};
+use process::ExitStatus;
 use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{
     Map,
-    Value::{self, Null},
+    Value::{self, Null, Object},
     from_str, json, to_string_pretty,
 };
 use std::{
@@ -21,7 +20,7 @@ use std::{
     fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
     io::{BufRead, BufReader, Write, stdin},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{self, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering::Relaxed},
@@ -29,6 +28,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use thread::scope;
+
+#[global_allocator]
+static GLOBAL_ALLOC: MiMalloc = MiMalloc;
 
 const A: f32 = 2.5;
 const B: f32 = 1.0;
@@ -285,41 +288,38 @@ pub fn compute_histogram(
 
     let total_bins = bins_usize * bins_usize;
 
-    let combined_atomic = pool.install(|| {
-        system
-            .particles()
-            .par_chunks(1024)
-            .map(|chunk| {
-                let local: Vec<AtomicU32> = (0..total_bins).map(|_| AtomicU32::new(0)).collect();
-
-                for particle in chunk.iter() {
-                    let px = particle.x;
-                    let py = particle.y;
+    let n = system.len();
+    let combined: Vec<u32> = pool.install(|| {
+        (0..n)
+            .into_par_iter()
+            .fold(
+                || vec![0u32; total_bins],
+                |mut local, idx| {
+                    let px = system.x[idx];
+                    let py = system.y[idx];
 
                     let ix = ((px - x_min) * dx_inv) as i32;
                     let iy = ((py - y_min) * dy_inv) as i32;
 
                     if ix >= 0 && ix < bins as i32 && iy >= 0 && iy < bins as i32 {
-                        let idx = (iy as usize) * bins_usize + (ix as usize);
-                        local[idx].fetch_add(1, Relaxed);
+                        let id = (iy as usize) * bins_usize + (ix as usize);
+                        local[id] = local[id].wrapping_add(1);
                     }
-                }
-
-                local
-            })
+                    local
+                },
+            )
             .reduce(
-                || (0..total_bins).map(|_| AtomicU32::new(0)).collect::<Vec<AtomicU32>>(),
-                |a, b| {
-                    for (i, v) in b.iter().enumerate() {
-                        let vval = v.load(Relaxed);
-                        a[i].fetch_add(vval, Relaxed);
+                || vec![0u32; total_bins],
+                |mut a, b| {
+                    for (i, v) in b.into_iter().enumerate() {
+                        a[i] = a[i].wrapping_add(v);
                     }
                     a
                 },
             )
     });
 
-    combined_atomic.into_iter().map(|c| c.load(Relaxed) as f32).collect()
+    combined.into_iter().map(|c| c as f32).collect()
 }
 
 fn bresenham_points(mut x0: i64, mut y0: i64, x1: i64, y1: i64) -> Vec<(i64, i64)> {
@@ -543,14 +543,16 @@ pub struct Particle {
     pub vy: f32,
 }
 
-#[derive(Clone)]
 pub struct ParticleSystem {
-    particles: Vec<Particle>,
+    pub x: Vec<f32>,
+    pub y: Vec<f32>,
+    pub vx: Vec<f32>,
+    pub vy: Vec<f32>,
 }
 
 impl Default for ParticleSystem {
     fn default() -> Self {
-        Self { particles: Vec::new() }
+        Self { x: Vec::new(), y: Vec::new(), vx: Vec::new(), vy: Vec::new() }
     }
 }
 
@@ -560,48 +562,52 @@ impl ParticleSystem {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { particles: Vec::with_capacity(capacity) }
+        Self {
+            x: Vec::with_capacity(capacity),
+            y: Vec::with_capacity(capacity),
+            vx: Vec::with_capacity(capacity),
+            vy: Vec::with_capacity(capacity),
+        }
     }
 
     pub fn resize(&mut self, size: usize) {
-        self.particles.resize(size, Particle { x: 0.0, y: 0.0, vx: 0.0, vy: 0.0 });
+        self.x.resize(size, 0.0);
+        self.y.resize(size, 0.0);
+        self.vx.resize(size, 0.0);
+        self.vy.resize(size, 0.0);
     }
 
     pub fn len(&self) -> usize {
-        self.particles.len()
+        self.x.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.particles.is_empty()
-    }
-
-    pub fn particles(&self) -> &[Particle] {
-        &self.particles
-    }
-
-    pub fn particles_mut(&mut self) -> &mut [Particle] {
-        &mut self.particles
+        self.x.is_empty()
     }
 }
 
-fn pow_fast(x: f32, e: f32) -> f32 {
-    const EPS: f32 = 1e-6;
+const LANES: usize = 8;
 
-    if (e - 1.0).abs() < EPS {
-        x
-    } else if (e - 2.0).abs() < EPS {
-        x * x
-    } else if (e - 3.0).abs() < EPS {
-        x * x * x
-    } else if (e - 4.0).abs() < EPS {
-        let x2 = x * x;
-        x2 * x2
+fn approx_eq(a: f32, b: f32) -> bool {
+    (a - b).abs() < 1e-6
+}
+
+fn pow_fast(v: f32, e: f32) -> f32 {
+    if approx_eq(e, 1.0) {
+        v
+    } else if approx_eq(e, 2.0) {
+        v * v
+    } else if approx_eq(e, 3.0) {
+        v * v * v
+    } else if approx_eq(e, 4.0) {
+        let v2 = v * v;
+        v2 * v2
     } else {
-        x.powf(e)
+        v.powf(e)
     }
 }
 
-pub fn step(
+pub fn step_simd(
     system: &mut ParticleSystem,
     dt: f32,
     epsilon: f32,
@@ -609,7 +615,6 @@ pub fn step(
     b: f32,
     n_exp: f32,
     m_exp: f32,
-    pool: &ThreadPool,
 ) {
     if system.is_empty() {
         return;
@@ -619,18 +624,35 @@ pub fn step(
     let inv_b = 1.0 / b;
     let eps2 = epsilon * epsilon;
 
-    pool.install(|| {
-        system.particles_mut().par_chunks_mut(1024).for_each(|chunk| {
-            for particle in chunk {
-                let px = particle.x + particle.vx * dt;
-                let py = particle.y + particle.vy * dt;
+    let n = system.len();
+
+    let mut i = 0usize;
+    while i < n {
+        let remaining = n - i;
+        if remaining >= LANES {
+            let mut ax = [0.0f32; LANES];
+            let mut ay = [0.0f32; LANES];
+            let mut avx = [0.0f32; LANES];
+            let mut avy = [0.0f32; LANES];
+
+            for j in 0..LANES {
+                ax[j] = system.x[i + j];
+                ay[j] = system.y[i + j];
+                avx[j] = system.vx[i + j];
+                avy[j] = system.vy[i + j];
+            }
+
+            for j in 0..LANES {
+                let px = ax[j] + avx[j] * dt;
+                let py = ay[j] + avy[j] * dt;
+
                 let xna = px.abs() * inv_a;
                 let ynb = py.abs() * inv_b;
                 let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
 
                 if val <= 0.0 {
-                    particle.x = px;
-                    particle.y = py;
+                    system.x[i + j] = px;
+                    system.y[i + j] = py;
                     continue;
                 }
 
@@ -645,30 +667,76 @@ pub fn step(
                 let len2 = df_dx * df_dx + df_dy * df_dy;
 
                 if len2 <= eps2 || len2 == 0.0 {
-                    particle.x = px;
-                    particle.y = py;
+                    system.x[i + j] = px;
+                    system.y[i + j] = py;
                     continue;
                 }
 
-                let inv_len = len2.sqrt().recip();
-
+                let inv_len = 1.0 / len2.sqrt();
                 let nx = df_dx * inv_len;
                 let ny = df_dy * inv_len;
 
-                let vx = particle.vx;
-                let vy = particle.vy;
+                let vx = avx[j];
+                let vy = avy[j];
                 let vxn = vx * nx + vy * ny;
-
                 let rx = vx - 2.0 * vxn * nx;
                 let ry = vy - 2.0 * vxn * ny;
 
-                particle.vx = rx;
-                particle.vy = ry;
-                particle.x = px - rx * epsilon;
-                particle.y = py - ry * epsilon;
+                system.vx[i + j] = rx;
+                system.vy[i + j] = ry;
+                system.x[i + j] = px - rx * epsilon;
+                system.y[i + j] = py - ry * epsilon;
             }
-        });
-    });
+
+            i += LANES;
+        } else {
+            for j in i..n {
+                let px = system.x[j] + system.vx[j] * dt;
+                let py = system.y[j] + system.vy[j] * dt;
+                let xna = px.abs() * inv_a;
+                let ynb = py.abs() * inv_b;
+                let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
+
+                if val <= 0.0 {
+                    system.x[j] = px;
+                    system.y[j] = py;
+                    continue;
+                }
+
+                let sign_x = px.signum();
+                let sign_y = py.signum();
+
+                let xpow = pow_fast(px.abs() * inv_a, n_exp - 1.0);
+                let ypow = pow_fast(py.abs() * inv_b, m_exp - 1.0);
+
+                let df_dx = n_exp * inv_a * xpow * sign_x;
+                let df_dy = m_exp * inv_b * ypow * sign_y;
+                let len2 = df_dx * df_dx + df_dy * df_dy;
+
+                if len2 <= eps2 || len2 == 0.0 {
+                    system.x[j] = px;
+                    system.y[j] = py;
+                    continue;
+                }
+
+                let inv_len = 1.0 / len2.sqrt();
+                let nx = df_dx * inv_len;
+                let ny = df_dy * inv_len;
+
+                let vx = system.vx[j];
+                let vy = system.vy[j];
+                let vxn = vx * nx + vy * ny;
+                let rx = vx - 2.0 * vxn * nx;
+                let ry = vy - 2.0 * vxn * ny;
+
+                system.vx[j] = rx;
+                system.vy[j] = ry;
+                system.x[j] = px - rx * epsilon;
+                system.y[j] = py - ry * epsilon;
+            }
+            break;
+        }
+    }
 }
 
 pub fn advance(
@@ -680,9 +748,8 @@ pub fn advance(
     b: f32,
     n_exp: f32,
     m_exp: f32,
-    pool: &ThreadPool,
 ) {
-    (0..steps).for_each(|_| step(system, dt, epsilon, a, b, n_exp, m_exp, pool));
+    (0..steps).for_each(|_| step_simd(system, dt, epsilon, a, b, n_exp, m_exp));
 }
 
 pub fn init_cluster(
@@ -692,35 +759,67 @@ pub fn init_cluster(
     center_y: f32,
     vx0: f32,
     vy0: f32,
-    pool: &ThreadPool,
+    _pool: &ThreadPool,
 ) -> ParticleSystem {
-    let n = n as usize;
-    let mut system = ParticleSystem::with_capacity(n);
-    system.resize(n);
+    let n_usize = n as usize;
+    let mut system = ParticleSystem::with_capacity(n_usize);
+    system.resize(n_usize);
 
-    let num_threads = num_cpus::get();
-    let chunk_size = (n + num_threads - 1) / num_threads;
+    fn splitmix64(mut x: u64) -> u64 {
+        x = x.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^ (z >> 31)
+    }
 
-    pool.install(|| {
-        system.particles_mut().par_chunks_mut(chunk_size).enumerate().for_each(
-            |(chunk_idx, chunk)| {
-                let seed_base = (chunk_idx as u64).wrapping_mul(SEED_MULTIPLIER);
-                let mut rng = StdRng::seed_from_u64(seed_base);
+    let num_threads = num_cpus::get().min(n_usize.max(1));
+    let chunk = (n_usize + num_threads - 1) / num_threads;
 
-                for particle in chunk.iter_mut() {
-                    let u1 = (rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
-                    let u2 = (rng.next_u64() as f64) / ((u64::MAX as f64) + 1.0);
+    let x_addr = system.x.as_mut_ptr() as usize;
+    let y_addr = system.y.as_mut_ptr() as usize;
+    let vx_addr = system.vx.as_mut_ptr() as usize;
+    let vy_addr = system.vy.as_mut_ptr() as usize;
+
+    scope(|s| {
+        for t in 0..num_threads {
+            let start = t * chunk;
+            if start >= n_usize {
+                break;
+            }
+            let end = (start + chunk).min(n_usize);
+            let len = end - start;
+            let seed0 = SEED_MULTIPLIER ^ (start as u64);
+
+            s.spawn(move || {
+                let x_ptr = x_addr as *mut f32;
+                let y_ptr = y_addr as *mut f32;
+                let vx_ptr = vx_addr as *mut f32;
+                let vy_ptr = vy_addr as *mut f32;
+
+                let mut seed = seed0;
+                for i in 0..len {
+                    let s1 = splitmix64(seed);
+                    seed = s1;
+                    let s2 = splitmix64(seed);
+                    seed = s2;
+
+                    let u1 = (s1 as f64) / ((u64::MAX as f64) + 1.0);
+                    let u2 = (s2 as f64) / ((u64::MAX as f64) + 1.0);
 
                     let r = radius * (u1.sqrt() as f32);
                     let theta = (u2 as f32) * 2.0 * PI;
 
-                    particle.x = r * theta.cos() + center_x;
-                    particle.y = r * theta.sin() + center_y;
-                    particle.vx = vx0;
-                    particle.vy = vy0;
+                    unsafe {
+                        let idx = start + i;
+                        *x_ptr.add(idx) = r * theta.cos() + center_x;
+                        *y_ptr.add(idx) = r * theta.sin() + center_y;
+                        *vx_ptr.add(idx) = vx0;
+                        *vy_ptr.add(idx) = vy0;
+                    }
                 }
-            },
-        );
+            });
+        }
     });
 
     system
@@ -782,7 +881,6 @@ impl SimulationData {
                 config.b,
                 config.n_exp,
                 config.m_exp,
-                &sim_pool,
             );
         }
 
@@ -844,7 +942,11 @@ pub fn run_frame_generation(
         .arg("-loglevel")
         .arg("error")
         .arg("-f")
-        .arg("image2pipe")
+        .arg("rawvideo")
+        .arg("-pix_fmt")
+        .arg("rgb24")
+        .arg("-video_size")
+        .arg(format!("{}x{}", width, height))
         .arg("-framerate")
         .arg(fps.to_string())
         .arg("-i")
@@ -871,25 +973,19 @@ pub fn run_frame_generation(
         .stderr(Stdio::null());
 
     let mut child = cmd.spawn()?;
-
     let child_stdin = child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
 
-    let (tx, rx) = bounded::<RgbImage>(1024);
+    let (tx, rx) = bounded::<RgbImage>(16);
 
-    thread::scope(|s| -> Result<(), Box<dyn Error>> {
+    scope(|s| -> Result<(), Box<dyn Error>> {
         let writer_handle = s.spawn(move || {
             let mut writer = child_stdin;
             while let Ok(img) = rx.recv() {
-                let width = img.width();
-                let height = img.height();
                 let raw = img.into_raw();
-                if let Err(e) =
-                    PngEncoder::new(&mut writer).write_image(&raw, width, height, Rgb8.into())
-                {
+                if let Err(e) = writer.write_all(&raw) {
                     eprintln!("ffmpeg stdin write error: {}", e);
                     break;
                 }
-                let _ = writer.flush();
             }
             drop(writer);
         });
@@ -904,7 +1000,6 @@ pub fn run_frame_generation(
                 config.b,
                 config.n_exp,
                 config.m_exp,
-                &sim_data.sim_pool,
             );
 
             let hist = compute_histogram(
@@ -959,7 +1054,7 @@ pub fn run_frame_generation(
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let _status = thread::scope(|s| -> Result<std::process::ExitStatus, Box<dyn Error>> {
+    let _status = scope(|s| -> Result<ExitStatus, Box<dyn Error>> {
         let spinner_clone = spinner.clone();
 
         let parser_handle = s.spawn(move || {
