@@ -1,4 +1,4 @@
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use chrono::Utc;
 use clap::Parser;
 use cmp::max;
@@ -24,7 +24,7 @@ use std::{
     process::{self, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicPtr, AtomicU32, Ordering, Ordering::Relaxed},
+        atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
     },
     thread,
     time::{Duration, Instant},
@@ -403,8 +403,6 @@ fn precompute_boundary_pixels(
     out_px: (u32, u32),
     sample_n: usize,
 ) -> Vec<(i64, i64)> {
-    use ahash::AHashSet;
-
     let (width, height) = out_px;
     let bins = sample_n.max(3); // error: This function takes 0 parameters, but 1
     //        parameter was supplied [E0061]
