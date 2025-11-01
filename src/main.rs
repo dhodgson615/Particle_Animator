@@ -1147,7 +1147,7 @@ pub fn generate_video(
     fps: u64,
     total_frames: u64,
 ) -> Result<(), Box<dyn Error>> {
-    let frames_pattern = frames_dir.join("%d.png").to_string_lossy().to_string();
+    let frames_pattern = frames_dir.join("%d.png").to_string_lossy().to_string(); // error: Method `to_string_lossy` not found in the current scope for type `String` [E0599]
 
     let mut cmd = Command::new("ffmpeg");
     cmd.arg("-y")
@@ -1231,7 +1231,7 @@ pub fn generate_video(
     final_pb.finish_with_message("Video generation complete");
 
     if !status.success() {
-        return Err("ffmpeg failed to generate video".into());
+        return Err("ffmpeg failed to generate video".into()); // error: Method `into` is private [E0624]
     }
 
     Ok(())
@@ -1268,7 +1268,8 @@ fn size_to_bytes(s: &str) -> Option<u64> {
 
     for (unit, mul) in &units {
         if s_upper.ends_with(unit) {
-            let num = s_upper.trim_end_matches(unit).trim();
+            // Method `ends_with` not found in the current scope for type `String` [E0599]
+            let num = s_upper.trim_end_matches(unit).trim(); // error: Method `trim_end_matches` not found in the current scope for type `String` [E0599]
             if let Ok(f) = num.parse::<f64>() {
                 return Some((f * (*mul as f64)).round() as u64);
             }
@@ -1303,7 +1304,7 @@ fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
     let mut parts_msg = Vec::new();
 
     if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) {
-        if let Some(bytes) = size_to_bytes(size) {
+        if let Some(bytes) = size_to_bytes(size.as_ref()) {
             parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6));
         }
     }
@@ -1404,7 +1405,7 @@ pub fn prepare_video_dirs_and_meta(
 
     let meta_path = video_dir.join("meta.json");
 
-    let meta = if meta_path.exists() {
+    let meta = if meta_path.exists() { // error: Method `exists` not found in the current scope for type `String` [E0599]
         let meta_content = read_to_string(&meta_path)?;
         from_str(&meta_content)?
     } else {
@@ -1472,7 +1473,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut response = String::new();
     stdin().read_line(&mut response)?;
 
-    if response.trim().to_lowercase() != "y" {
+    if response.trim().to_lowercase() != "y" { // error: Method `trim` not found in the current scope for type `String` [E0599]
         println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
         return Ok(());
     }
@@ -1496,8 +1497,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         dirs.meta.get("compute_time").and_then(|v| v.as_f64()).unwrap_or(0.0) + compute_time;
 
     let mut updated_meta = dirs.meta.clone();
-    updated_meta["compute_time"] = Value::from(total_compute_time);
-    updated_meta["last_frame"] = Value::from(n_frames);
+    updated_meta["compute_time"] = Value::from(total_compute_time); // error: function `from` is private [E0624]
+    updated_meta["last_frame"] = Value::from(n_frames); // error: function `from` is private [E0624]
     write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
 
     println!("Video saved to `mp4/{}`", index);
