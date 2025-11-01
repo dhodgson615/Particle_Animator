@@ -1,7 +1,6 @@
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashSet;
 use chrono::Utc;
 use clap::Parser;
-use cmp::max;
 use crossbeam_channel::bounded;
 use image::RgbImage;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -15,7 +14,6 @@ use serde_json::{
     from_str, json, to_string_pretty,
 };
 use std::{
-    cmp,
     error::Error,
     f32::consts::PI,
     fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
@@ -24,7 +22,7 @@ use std::{
     process::{self, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
+        atomic::{AtomicU8, Ordering::Relaxed},
     },
     thread,
     time::{Duration, Instant},
@@ -32,7 +30,7 @@ use std::{
 use thread::scope;
 
 #[global_allocator]
-static GLOBAL_ALLOC: MiMalloc = MiMalloc;
+static GLOBAL_ALLOC: MiMalloc = MiMalloc; // Do not change
 
 const A: f32 = 1.0;
 const B: f32 = 1.0;
@@ -404,13 +402,11 @@ fn precompute_boundary_pixels(
     sample_n: usize,
 ) -> Vec<(i64, i64)> {
     let (width, height) = out_px;
-    let bins = sample_n.max(3); // error: This function takes 0 parameters, but 1
-    //        parameter was supplied [E0061]
+    let bins = std::cmp::max(sample_n, 3);
     let x_span = (x_edges.last().cloned().unwrap_or(0.0) - x_edges[0]).abs().max(1e-6);
     let y_span = (y_edges.last().cloned().unwrap_or(0.0) - y_edges[0]).abs().max(1e-6);
 
-    let orig_n = bx.len().max(1); // error: This function takes 0 parameters, but 1
-    //        parameter was supplied [E0061]
+    let orig_n = std::cmp::max(bx.len(), 1);
 
     let sampled_pts: Vec<(i64, i64)> = (0..bins)
         .into_par_iter()
@@ -454,8 +450,7 @@ fn precompute_boundary_pixels(
         })
         .collect();
 
-    all_pts.sort_unstable(); // error: Method `sort_unstable` not found in the current scope for
-    //        type `Vec<(i64, i64)>` [E0599]
+    all_pts.sort_unstable();
     all_pts.dedup();
     all_pts
 }
@@ -475,50 +470,41 @@ fn draw_boundary(
     let w = width as usize;
     let h = height as usize;
     let total = w.saturating_mul(h);
-    let atoms: Vec<AtomicU32> = (0..total).map(|_| AtomicU32::new(0)).collect();
-    let atoms = Arc::new(atoms);
+
+    let atoms_vec: Vec<AtomicU8> = (0..total).map(|_| AtomicU8::new(0)).collect();
+    let atoms = Arc::new(atoms_vec);
 
     pool.install(|| {
         bresenham_px.par_iter().for_each(|&(lx, ly)| {
-            let atoms = atoms.clone(); // error: Method `clone` not found in the current scope for
-            //        type `Arc<Vec<AtomicU32>>` [E0599]
-            offsets.iter().for_each(|&(dx, dy)| {
+            for &(dx, dy) in offsets {
                 let px = lx + dx;
                 let py = ly + dy;
 
                 if px < 0 || py < 0 {
-                    return;
+                    continue;
                 }
 
                 let pxu = px as usize;
                 let pyu = py as usize;
 
                 if pxu >= w || pyu >= h {
-                    return;
+                    continue;
                 }
 
                 let idx = pyu * w + pxu;
                 atoms[idx].store(1, Relaxed);
-            });
-        });
-
-        image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
-            // error: Value used after being moved [E0382]
-            let base_row_idx = y * w;
-
-            // TODO: parallelize for SIMD
-            for (x, pixel) in row.chunks_mut(3).enumerate() {
-                let idx = base_row_idx + x;
-                if atoms[idx].load(Relaxed) != 0 {
-                    if pixel.len() >= 3 {
-                        pixel[0] = 255;
-                        pixel[1] = 255;
-                        pixel[2] = 255;
-                    }
-                }
             }
         });
     });
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            if atoms[idx].load(Relaxed) != 0 {
+                image.put_pixel(x as u32, y as u32, image::Rgb([255u8, 255u8, 255u8]));
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -537,7 +523,6 @@ pub struct ParticleSystem {
 }
 
 impl Default for ParticleSystem {
-    // error: Cannot find trait `Default` in this scope [E0405]
     fn default() -> Self {
         Self { x: Vec::new(), y: Vec::new(), vx: Vec::new(), vy: Vec::new() }
     }
@@ -545,7 +530,7 @@ impl Default for ParticleSystem {
 
 impl ParticleSystem {
     pub fn new() -> Self {
-        Self::default() // error: Cannot find function `default` in this scope [E0425]
+        Self::default()
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
@@ -679,26 +664,12 @@ pub fn step_simd(
 
             i += LANES;
         } else {
-            let x_atomic = Arc::new(AtomicPtr::new(system.x.as_mut_ptr()));
-            let y_atomic = Arc::new(AtomicPtr::new(system.y.as_mut_ptr()));
-            let vx_atomic = Arc::new(AtomicPtr::new(system.vx.as_mut_ptr()));
-            let vy_atomic = Arc::new(AtomicPtr::new(system.vy.as_mut_ptr()));
-
-            (i..n).into_par_iter().for_each(|j| {
-                let x_ptr = x_atomic.load(Relaxed); // error: Method `load` not found in current
-                //        scope
-                let y_ptr = y_atomic.load(Relaxed); // error: Method `load` not found in current
-                //        scope
-                let vx_ptr = vx_atomic.load(Relaxed); // error: Method `load` not found in current
-                //        scope
-                let vy_ptr = vy_atomic.load(Relaxed); // error: Method `load` not found in current
-                // scope
-
+            for j in i..n {
                 unsafe {
-                    let xj = *x_ptr.add(j);
-                    let yj = *y_ptr.add(j);
-                    let vxj = *vx_ptr.add(j);
-                    let vyj = *vy_ptr.add(j);
+                    let xj = *system.x.as_mut_ptr().add(j);
+                    let yj = *system.y.as_mut_ptr().add(j);
+                    let vxj = *system.vx.as_mut_ptr().add(j);
+                    let vyj = *system.vy.as_mut_ptr().add(j);
 
                     let px = xj + vxj * dt;
                     let py = yj + vyj * dt;
@@ -707,9 +678,9 @@ pub fn step_simd(
                     let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
 
                     if val <= 0.0 {
-                        *x_ptr.add(j) = px;
-                        *y_ptr.add(j) = py;
-                        return;
+                        *system.x.as_mut_ptr().add(j) = px;
+                        *system.y.as_mut_ptr().add(j) = py;
+                        continue;
                     }
 
                     let sign_x = px.signum();
@@ -723,9 +694,9 @@ pub fn step_simd(
                     let len2 = df_dx * df_dx + df_dy * df_dy;
 
                     if len2 <= eps2 || len2 == 0.0 {
-                        *x_ptr.add(j) = px;
-                        *y_ptr.add(j) = py;
-                        return;
+                        *system.x.as_mut_ptr().add(j) = px;
+                        *system.y.as_mut_ptr().add(j) = py;
+                        continue;
                     }
 
                     let inv_len = 1.0 / len2.sqrt();
@@ -736,13 +707,12 @@ pub fn step_simd(
                     let rx = vxj - 2.0 * vxn * nx;
                     let ry = vyj - 2.0 * vxn * ny;
 
-                    *vx_ptr.add(j) = rx;
-                    *vy_ptr.add(j) = ry;
-                    *x_ptr.add(j) = px - rx * epsilon;
-                    *y_ptr.add(j) = py - ry * epsilon;
+                    *system.vx.as_mut_ptr().add(j) = rx;
+                    *system.vy.as_mut_ptr().add(j) = ry;
+                    *system.x.as_mut_ptr().add(j) = px - rx * epsilon;
+                    *system.y.as_mut_ptr().add(j) = py - ry * epsilon;
                 }
-            });
-
+            }
             break;
         }
     }
@@ -781,9 +751,7 @@ pub fn init_cluster(
         z ^ (z >> 31)
     }
 
-    let num_threads = num_cpus::get().min(n_usize.max(1)); // error: This function takes 0
-    //         parameters, but 1 parameter
-    //         was supplied [E0061]
+    let num_threads = std::cmp::min(num_cpus::get(), std::cmp::max(n_usize, 1));
     let chunk = (n_usize + num_threads - 1) / num_threads;
 
     let x_addr = system.x.as_mut_ptr() as usize;
@@ -881,7 +849,8 @@ impl SimulationData {
     pub fn new(config: &Config, start_frame: u64) -> Self {
         let default_cpus = num_cpus::get();
         let sim_threads = config.sim_threads.unwrap_or(default_cpus);
-        let render_threads = config.render_threads.unwrap_or(max(1, default_cpus / 2));
+        let render_threads =
+            config.render_threads.unwrap_or(std::cmp::max(1usize, default_cpus / 2));
 
         let sim_pool = Arc::new(
             ThreadPoolBuilder::new()
@@ -905,11 +874,9 @@ impl SimulationData {
         let (x_edges, y_edges) = histogram_edges(config.a, config.b, config.res, HISTOGRAM_FACTOR);
 
         let out_px = compute_out_px(config.dpi);
-        let sample_n = (config.res as usize).max(3); // error: This function takes 0 parameters, but 1
-        //        parameter was supplied [E0061]
+        let sample_n = std::cmp::max(config.res as usize, 3);
         let boundary_pixels =
             Arc::new(precompute_boundary_pixels(&bx, &by, &x_edges, &y_edges, out_px, sample_n));
-        // error: Several type mismatches found [E0308]
 
         let pixel_bin_map = Arc::new(precompute_pixel_bin_map(out_px, config.res as usize));
         let thickness_offsets = Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
@@ -1147,7 +1114,7 @@ pub fn generate_video(
     fps: u64,
     total_frames: u64,
 ) -> Result<(), Box<dyn Error>> {
-    let frames_pattern = frames_dir.join("%d.png").to_string_lossy().to_string(); // error: Method `to_string_lossy` not found in the current scope for type `String` [E0599]
+    let frames_pattern = frames_dir.join("%d.png").to_string_lossy().to_string();
 
     let mut cmd = Command::new("ffmpeg");
     cmd.arg("-y")
@@ -1203,8 +1170,7 @@ pub fn generate_video(
 
         let (msg, is_end) = build_progress_msg(&kv_map);
         if msg != last_msg {
-            spinner.set_message(msg.clone()); // error: Method `clone` not found in the current
-            //        scope for type `String` [E0599]
+            spinner.set_message(msg.clone());
             last_msg = msg;
         }
 
@@ -1231,99 +1197,10 @@ pub fn generate_video(
     final_pb.finish_with_message("Video generation complete");
 
     if !status.success() {
-        return Err("ffmpeg failed to generate video".into()); // error: Method `into` is private [E0624]
+        return Err("ffmpeg failed to generate video".into());
     }
 
     Ok(())
-}
-
-fn size_to_bytes(s: &str) -> Option<u64> {
-    let s = s.trim();
-
-    if s.is_empty() || s.eq_ignore_ascii_case("N/A") {
-        return None;
-    }
-
-    if let Ok(v) = s.parse::<u64>() {
-        return Some(v);
-    }
-
-    let s_upper = s.to_uppercase();
-
-    let units = [
-        ("B", 1u64),
-        ("KB", 1_000u64),
-        ("KIB", 1024u64),
-        ("MB", 1_000_000u64),
-        ("MIB", 1024u64 * 1024u64),
-        ("GB", 1_000_000_000u64),
-        ("GIB", 1024u64 * 1024u64 * 1024u64),
-        ("TB", 1_000_000_000_000u64),
-        ("TIB", 1024u64.pow(4)),
-        ("K", 1_000u64),
-        ("M", 1_000_000u64),
-        ("G", 1_000_000_000u64),
-        ("T", 1_000_000_000_000u64),
-    ];
-
-    for (unit, mul) in &units {
-        if s_upper.ends_with(unit) {
-            // Method `ends_with` not found in the current scope for type `String` [E0599]
-            let num = s_upper.trim_end_matches(unit).trim(); // error: Method `trim_end_matches` not found in the current scope for type `String` [E0599]
-            if let Ok(f) = num.parse::<f64>() {
-                return Some((f * (*mul as f64)).round() as u64);
-            }
-        }
-    }
-
-    None
-}
-
-fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
-    let mut kv_map: AHashMap<String, String> = AHashMap::new();
-    let mut i = 0;
-
-    while i < parts.len() {
-        let part = parts[i];
-        if let Some(eq_pos) = part.find('=') {
-            let key = part[..eq_pos].trim().to_string();
-            let mut val = part[eq_pos + 1..].trim();
-            if val.is_empty() && (i + 1) < parts.len() && !parts[i + 1].contains('=') {
-                i += 1;
-                val = parts[i].trim();
-            }
-            kv_map.insert(key, val.to_string());
-        }
-        i += 1;
-    }
-
-    kv_map
-}
-
-fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
-    let mut parts_msg = Vec::new();
-
-    if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) {
-        if let Some(bytes) = size_to_bytes(size.as_ref()) {
-            parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6));
-        }
-    }
-
-    if let Some(fps_s) = kv_map.get("fps") {
-        parts_msg.push(format!("fps:{}", fps_s.trim()));
-    }
-
-    if let Some(speed) = kv_map.get("speed") {
-        parts_msg.push(format!("speed:{}", speed.trim()));
-    }
-
-    if let Some(out_time) = kv_map.get("progress").or_else(|| kv_map.get("time")) {
-        parts_msg.push(format!("time:{}", out_time.trim()));
-    }
-
-    let msg = parts_msg.join(" | ");
-    let is_end = kv_map.get("progress").map(|p| p.trim() == "end").unwrap_or(false);
-    (msg, is_end)
 }
 
 fn try_insert_numeric(name: &str, used_indices: &mut AHashSet<u64>) {
@@ -1382,15 +1259,14 @@ pub fn choose_video_index() -> Result<u64, Box<dyn Error>> {
     let mut input = String::new();
     stdin().read_line(&mut input)?;
 
-    let input = input.trim(); // error: Method `trim` not found in the current scope for type
-    //        `String` [E0599]
+    let input_trimmed = input.trim();
 
-    if input.is_empty() {
+    if input_trimmed.is_empty() {
         let index = next_available_index()?;
         println!("Using next available index: {}", index);
         Ok(index)
     } else {
-        input.parse::<u64>().map_err(|e| e.into())
+        input_trimmed.parse::<u64>().map_err(|e| e.into())
     }
 }
 
@@ -1405,15 +1281,15 @@ pub fn prepare_video_dirs_and_meta(
 
     let meta_path = video_dir.join("meta.json");
 
-    let meta = if meta_path.exists() { // error: Method `exists` not found in the current scope for type `String` [E0599]
+    let meta = if meta_path.exists() {
         let meta_content = read_to_string(&meta_path)?;
         from_str(&meta_content)?
     } else {
         let mut meta = Map::new();
         meta.insert("constants".to_string(), config.constants());
         meta.insert("date".to_string(), Value::String(Utc::now().to_rfc3339()));
-        meta.insert("last_frame".to_string(), Value::from(0));
-        meta.insert("compute_time".to_string(), Value::from(0.0));
+        meta.insert("last_frame".to_string(), json!(0));
+        meta.insert("compute_time".to_string(), json!(0.0));
         meta.insert("resolution".to_string(), Value::from(config.res));
         Object(meta)
     };
@@ -1473,7 +1349,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut response = String::new();
     stdin().read_line(&mut response)?;
 
-    if response.trim().to_lowercase() != "y" { // error: Method `trim` not found in the current scope for type `String` [E0599]
+    if response.trim().to_lowercase() != "y" {
         println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
         return Ok(());
     }
@@ -1497,14 +1373,46 @@ fn main() -> Result<(), Box<dyn Error>> {
         dirs.meta.get("compute_time").and_then(|v| v.as_f64()).unwrap_or(0.0) + compute_time;
 
     let mut updated_meta = dirs.meta.clone();
-    updated_meta["compute_time"] = Value::from(total_compute_time); // error: function `from` is private [E0624]
-    updated_meta["last_frame"] = Value::from(n_frames); // error: function `from` is private [E0624]
+    updated_meta["compute_time"] = json!(total_compute_time);
+    updated_meta["last_frame"] = json!(n_frames);
     write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
 
     println!("Video saved to `mp4/{}`", index);
     println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
 
     Ok(())
+}
+
+fn parse_kv_from_parts(parts: &[&str]) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for part in parts {
+        if let Some((k, v)) = part.split_once('=') {
+            out.insert(k.to_string(), v.to_string());
+        }
+    }
+    out
+}
+
+fn build_progress_msg(kv: &std::collections::HashMap<String, String>) -> (String, bool) {
+    let frame = kv.get("frame").cloned().unwrap_or_default();
+    let speed = kv.get("speed").cloned().unwrap_or_default();
+    let total_size = kv.get("total_size").cloned().unwrap_or_default();
+    let progress = kv.get("progress").cloned().unwrap_or_default();
+
+    let mut parts = Vec::new();
+    if !frame.is_empty() {
+        parts.push(format!("frame={}", frame));
+    }
+    if !total_size.is_empty() {
+        parts.push(format!("size={}", total_size));
+    }
+    if !speed.is_empty() {
+        parts.push(format!("speed={}", speed));
+    }
+
+    let msg = parts.join(" ");
+    let is_end = progress == "end";
+    (msg, is_end)
 }
 
 fn render(
@@ -1519,39 +1427,44 @@ fn render(
     let (width, height) = out_px;
     let w = width as usize;
 
-    let mut img = RgbImage::new(width, height);
+    let mut raw = vec![0u8; (width as usize) * (height as usize) * 3usize];
 
     let palette_len = palette.len();
     let max_v = h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
     let scale =
         if max_v > 0.0 { (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32) } else { 1.0 };
 
-    let palette_ref: &[[u8; 3]] = &palette;
+    let palette_ref: &[[u8; 3]] = palette.as_ref().as_slice();
+    let pixel_bin_map_slice: &[usize] = pixel_bin_map.as_ref().as_slice();
 
-    pool.install(|| {
-        img.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
-            // error: Method `par_chunks_mut` not found in the current scope for type
-            //        `ImageBuffer<Rgb<u8>, Vec<u8>>` [E0599]
+    let pool_ref: &ThreadPool = pool.as_ref();
+
+    pool_ref.install(|| {
+        raw.par_chunks_mut((width as usize) * 3).enumerate().for_each(|(y, row)| {
             let base_idx = y * w;
             for (x, pixel) in row.chunks_mut(3).enumerate() {
                 let idx = base_idx + x;
-                if idx >= pixel_bin_map.len() {
+
+                if idx >= pixel_bin_map_slice.len() {
                     pixel[0] = 0;
                     pixel[1] = 0;
                     pixel[2] = 0;
                     continue;
                 }
-                let bin = pixel_bin_map[idx];
+
+                let bin = pixel_bin_map_slice[idx];
+
                 if bin >= h_log_flat.len() {
                     pixel[0] = 0;
                     pixel[1] = 0;
                     pixel[2] = 0;
                     continue;
                 }
+
                 let v = h_log_flat[bin].max(0.0);
                 let pi = ((v.sqrt() * scale) as usize).min(palette_len - 1);
-                // error: This function takes 0 parameters, but 1 parameter was supplied [E0061]
                 let col = palette_ref[pi];
+
                 pixel[0] = col[0];
                 pixel[1] = col[1];
                 pixel[2] = col[2];
@@ -1559,14 +1472,18 @@ fn render(
         });
     });
 
+    let mut img =
+        RgbImage::from_raw(width, height, raw).expect("Failed to construct image from raw buffer");
+
+    let pool_for_boundary: &ThreadPool = pool.as_ref();
     draw_boundary(
-        &mut img,                  // error: Value used after being moved [E0382]
-        &boundary_pixels.as_ref(), // error: Method `as_ref` is private [E0624]
+        &mut img,
+        &boundary_pixels,
         width,
         height,
-        &thickness_offsets.as_ref(), // error: Method `as_ref` is private [E0624]
-        pool,
+        thickness_offsets.as_ref(),
+        pool_for_boundary,
     );
 
-    img // error: Value used after being moved [E0382]
+    img
 }
