@@ -24,9 +24,147 @@
 - Attempt to use an arena allocator for better memory management.
 - Reuse buffers where possible to reduce freeing and reallocating memory.
 - Look into creating a custom memory allocator tailored to the application's needs.
-- Look into cross platform GPU libraries that work on Mac (including/especially Apple Silicon) and Linux, such as `wgpu` or `vulkan`.
+- Add `wgpu` support for rendering and compute tasks.
 - Add a command line flag for enabling/disabling GPU acceleration.
 - Prototype GPU acceleration for compute-heavy tasks and benchmark against CPU-only implementation.
 - Find out if shaders
 - Find ways to overlap CPU and GPU work to maximize resource utilization.
 - Consider adding web support using WebAssembly (WASM) and publishing a web version of the tool.
+- Add rustflags such as `-C target-cpu=native`, `-C opt-level=3`, `-C lto`, and `-C codegen-units=1`, `-C inline-threshold=1000`, `-C target-feature=+sse2,+avx,+avx2,+fma`, etc.
+
+- Consider these optimizations:
+
+```rust
+
+pub fn histogram_counts(
+    system: &ParticleSystem,
+    x_min: f32,
+    y_min: f32,
+    dx_inv: f32,
+    dy_inv: f32,
+    bins: u32,
+    total_bins: usize,
+    pool: &ThreadPool,
+    atoms: &mut [AtomicU32],
+) {
+    let bins_usize = bins as usize;
+    let n = system.len();
+
+    atoms.iter().for_each(|a| a.store(0, Ordering::Relaxed));
+
+    pool.install(|| {
+        (0..n).into_par_iter().for_each(|idx| {
+            let px = system.x[idx];
+            let py = system.y[idx];
+
+            let ix = ((px - x_min) * dx_inv) as i32;
+            let iy = ((py - y_min) * dy_inv) as i32;
+
+            if ix >= 0 && ix < bins as i32 && iy >= 0 && iy < bins as i32 {
+                let id = (iy as usize) * bins_usize + (ix as usize);
+                atoms[id].fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    });
+}
+
+pub fn atoms_to_u32_slice(atoms: &[AtomicU32], out: &mut [u32]) {
+    assert_eq!(atoms.len(), out.len());
+    for (i, a) in atoms.iter().enumerate() {
+        out[i] = a.load(Ordering::Relaxed);
+    }
+}
+
+pub fn compute_histogram_inplace(
+    system: &ParticleSystem,
+    x_edges: &[f32],
+    y_edges: &[f32],
+    bins: u32,
+    pool: &ThreadPool,
+    out: &mut [f32],
+    atoms: &mut [AtomicU32],
+) {
+    let bins_usize = bins as usize;
+    let total_bins = bins_usize * bins_usize;
+
+    debug_assert_eq!(total_bins, atoms.len());
+    debug_assert!(out.len() >= total_bins);
+
+    let x_min = x_edges[0];
+    let x_max = *x_edges.last().unwrap_or(&x_min);
+    let y_min = y_edges[0];
+    let y_max = *y_edges.last().unwrap_or(&y_min);
+
+    let dx = (x_max - x_min) / bins as f32;
+    let dy = (y_max - y_min) / bins as f32;
+    let dx_inv = if dx != 0.0 { 1.0 / dx } else { 0.0 };
+    let dy_inv = if dy != 0.0 { 1.0 / dy } else { 0.0 };
+
+    histogram_counts_atomic(system, x_min, y_min, dx_inv, dy_inv, bins, total_bins, pool, atoms);
+
+    for i in 0..total_bins {
+        out[i] = atoms[i].load(Ordering::Relaxed) as f32;
+    }
+}
+
+pub fn render(
+    h_log_flat: &[f32],
+    boundary_pixels: &Arc<Vec<(i64, i64)>>,
+    palette: &Arc<Vec<[u8; 3]>>,
+    out_px: (u32, u32),
+    pool: &ThreadPool,
+    pixel_bin_map: &Arc<Vec<usize>>,
+    thickness_offsets: &Arc<Vec<(i64, i64)>>,
+    raw_buf: &mut Vec<u8>,
+) -> image::RgbImage {
+    let (width, height) = out_px;
+    let w = width as usize;
+    let h = height as usize;
+    let palette_len = palette.len();
+
+    raw_buf.clear();
+    raw_buf.resize(w * h * 3, 0u8);
+
+    let max_v = h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
+    let scale = if max_v > 0.0 { (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32) } else { 1.0 };
+
+    let palette_ref: &[[u8; 3]] = palette.as_ref().as_slice();
+    let pixel_bin_map_slice: &[usize] = pixel_bin_map.as_ref().as_slice();
+
+    pool.install(|| {
+        raw_buf.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+            let base_idx = y * w;
+            for (x, pixel) in row.chunks_mut(3).enumerate() {
+                let idx = base_idx + x;
+                if idx >= pixel_bin_map_slice.len() {
+                    pixel[0] = 0; pixel[1] = 0; pixel[2] = 0;
+                    continue;
+                }
+                let bin = pixel_bin_map_slice[idx];
+                if bin >= h_log_flat.len() {
+                    pixel[0] = 0; pixel[1] = 0; pixel[2] = 0;
+                    continue;
+                }
+                let v = h_log_flat[bin].max(0.0);
+                let pi = ((v.sqrt() * scale) as usize).min(palette_len - 1);
+                let col = palette_ref[pi];
+                pixel[0] = col[0]; pixel[1] = col[1]; pixel[2] = col[2];
+            }
+        });
+    });
+
+    let mut img = image::RgbImage::from_raw(width, height, raw_buf.clone())
+        .expect("Failed to construct image from raw buffer");
+
+    draw_boundary(
+        &mut img,
+        &boundary_pixels,
+        width,
+        height,
+        thickness_offsets.as_ref(),
+        pool,
+    );
+
+    img
+}
+```
