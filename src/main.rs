@@ -1,6 +1,7 @@
 use ahash::AHashSet;
 use chrono::Utc;
 use clap::Parser;
+use collections::HashMap;
 use crossbeam_channel::bounded;
 use image::RgbImage;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -14,6 +15,7 @@ use serde_json::{
     from_str, json, to_string_pretty,
 };
 use std::{
+    collections,
     error::Error,
     f32::consts::PI,
     fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
@@ -22,7 +24,7 @@ use std::{
     process::{self, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, Ordering::Relaxed},
+        atomic::{AtomicU8, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -334,6 +336,7 @@ pub fn compute_histogram(
 
     let n = system.len();
     let combined: Vec<u32> = pool.install(|| {
+        // TODO: deduplicate this with below with a macro or function
         (0..n)
             .into_par_iter()
             .fold(
@@ -450,7 +453,7 @@ fn precompute_boundary_pixels(
         })
         .collect();
 
-    all_pts.sort_unstable();
+    all_pts.sort_unstable(); // error: Method `sort_unstable` not found in the current scope for type `Vec<(i64, i64)>` [E0599]
     all_pts.dedup();
     all_pts
 }
@@ -492,7 +495,7 @@ fn draw_boundary(
                 }
 
                 let idx = pyu * w + pxu;
-                atoms[idx].store(1, Relaxed);
+                atoms[idx].store(1, Ordering::Relaxed);
             }
         });
     });
@@ -500,7 +503,7 @@ fn draw_boundary(
     for y in 0..h {
         for x in 0..w {
             let idx = y * w + x;
-            if atoms[idx].load(Relaxed) != 0 {
+            if atoms[idx].load(Ordering::Relaxed) != 0 {
                 image.put_pixel(x as u32, y as u32, image::Rgb([255u8, 255u8, 255u8]));
             }
         }
@@ -990,8 +993,10 @@ pub fn run_frame_generation(
     cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
 
     let mut child = cmd.spawn()?;
-    let child_stdin = child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
-
+    let child_stdin = child.stdin.take().ok_or_else(|| {
+        Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Failed to open ffmpeg stdin"))
+            as Box<dyn Error>
+    })?;
     let (tx, rx) = bounded::<RgbImage>(12);
 
     scope(|s| -> Result<(), Box<dyn Error>> {
@@ -1019,15 +1024,15 @@ pub fn run_frame_generation(
                 config.m_exp,
             );
 
-            let hist = compute_histogram(
+            // compute histogram directly into the preallocated buffer to avoid allocations/copies
+            compute_histogram_inplace(
                 &sim_data.system,
                 &sim_data.x_edges,
                 &sim_data.y_edges,
                 config.res,
-                &sim_data.sim_pool,
+                sim_data.sim_pool.as_ref(),
+                &mut histogram_buf,
             );
-
-            histogram_buf.copy_from_slice(&hist);
 
             h_log_flat.par_iter_mut().zip(&histogram_buf).for_each(|(h, &v)| {
                 *h = v + config.epsilon;
@@ -1043,11 +1048,9 @@ pub fn run_frame_generation(
                 &sim_data.thickness_offsets,
             );
 
-            if let Err(e) = tx.send(frame_image) {
-                return Err(Box::<dyn Error>::from(format!(
-                    "ffmpeg writer channel send failed: {}",
-                    e
-                )));
+            // single send with simple error handling
+            if tx.send(frame_image).is_err() {
+                return Err("ffmpeg writer channel send failed".into());
             }
 
             pb.inc(1);
@@ -1197,7 +1200,7 @@ pub fn generate_video(
     final_pb.finish_with_message("Video generation complete");
 
     if !status.success() {
-        return Err("ffmpeg failed to generate video".into());
+        return Err(format!("ffmpeg failed to generate video").into());
     }
 
     Ok(())
@@ -1383,8 +1386,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_kv_from_parts(parts: &[&str]) -> std::collections::HashMap<String, String> {
-    let mut out = std::collections::HashMap::new();
+fn parse_kv_from_parts(parts: &[&str]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
     for part in parts {
         if let Some((k, v)) = part.split_once('=') {
             out.insert(k.to_string(), v.to_string());
@@ -1393,7 +1396,7 @@ fn parse_kv_from_parts(parts: &[&str]) -> std::collections::HashMap<String, Stri
     out
 }
 
-fn build_progress_msg(kv: &std::collections::HashMap<String, String>) -> (String, bool) {
+fn build_progress_msg(kv: &HashMap<String, String>) -> (String, bool) {
     let frame = kv.get("frame").cloned().unwrap_or_default();
     let speed = kv.get("speed").cloned().unwrap_or_default();
     let total_size = kv.get("total_size").cloned().unwrap_or_default();
@@ -1486,4 +1489,63 @@ fn render(
     );
 
     img
+}
+
+pub fn compute_histogram_inplace(
+    system: &ParticleSystem,
+    x_edges: &[f32],
+    y_edges: &[f32],
+    bins: u32,
+    pool: &ThreadPool,
+    out: &mut [f32],
+) {
+    let bins_usize = bins as usize;
+    let total_bins = bins_usize * bins_usize;
+    let n = system.len();
+
+    let x_min = x_edges[0];
+    let x_max = *x_edges.last().unwrap_or(&x_min);
+    let y_min = y_edges[0];
+    let y_max = *y_edges.last().unwrap_or(&y_min);
+
+    let dx = (x_max - x_min) / bins as f32;
+    let dy = (y_max - y_min) / bins as f32;
+    let dx_inv = if dx != 0.0 { 1.0 / dx } else { 0.0 };
+    let dy_inv = if dy != 0.0 { 1.0 / dy } else { 0.0 };
+
+    let combined: Vec<u32> = pool.install(|| {
+        // TODO: deduplicate code with above with a macro or function
+        (0..n)
+            .into_par_iter()
+            .fold(
+                || vec![0u32; total_bins],
+                |mut local, idx| {
+                    let px = system.x[idx];
+                    let py = system.y[idx];
+
+                    let ix = ((px - x_min) * dx_inv) as i32;
+                    let iy = ((py - y_min) * dy_inv) as i32;
+
+                    if ix >= 0 && ix < bins as i32 && iy >= 0 && iy < bins as i32 {
+                        let id = (iy as usize) * bins_usize + (ix as usize);
+                        local[id] = local[id].wrapping_add(1);
+                    }
+                    local
+                },
+            )
+            .reduce(
+                || vec![0u32; total_bins],
+                |mut a, b| {
+                    for (i, v) in b.into_iter().enumerate() {
+                        a[i] = a[i].wrapping_add(v);
+                    }
+                    a
+                },
+            )
+    });
+
+    // write into out buffer (resize/assure length externally)
+    for (i, &c) in combined.iter().enumerate().take(total_bins) {
+        out[i] = c as f32;
+    }
 }
