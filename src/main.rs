@@ -314,29 +314,20 @@ fn precompute_thickness_offsets(thickness: usize) -> Vec<(i64, i64)> {
     per_rows.into_par_iter().flat_map(|row| row.into_par_iter()).collect()
 }
 
-pub fn compute_histogram(
+pub fn histogram_counts(
     system: &ParticleSystem,
-    x_edges: &[f32],
-    y_edges: &[f32],
+    x_min: f32,
+    y_min: f32,
+    dx_inv: f32,
+    dy_inv: f32,
     bins: u32,
+    total_bins: usize,
     pool: &ThreadPool,
-) -> Vec<f32> {
+) -> Vec<u32> {
     let bins_usize = bins as usize;
-    let x_min = x_edges[0];
-    let x_max = *x_edges.last().unwrap_or(&x_min);
-    let y_min = y_edges[0];
-    let y_max = *y_edges.last().unwrap_or(&y_min);
-
-    let dx = (x_max - x_min) / bins as f32;
-    let dy = (y_max - y_min) / bins as f32;
-    let dx_inv = if dx != 0.0 { 1.0 / dx } else { 0.0 };
-    let dy_inv = if dy != 0.0 { 1.0 / dy } else { 0.0 };
-
-    let total_bins = bins_usize * bins_usize;
-
     let n = system.len();
-    let combined: Vec<u32> = pool.install(|| {
-        // TODO: deduplicate this with below with a macro or function
+
+    pool.install(|| {
         (0..n)
             .into_par_iter()
             .fold(
@@ -364,9 +355,33 @@ pub fn compute_histogram(
                     a
                 },
             )
-    });
+    })
+}
 
-    combined.into_iter().map(|c| c as f32).collect()
+pub fn compute_histogram(
+    system: &ParticleSystem,
+    x_edges: &[f32],
+    y_edges: &[f32],
+    bins: u32,
+    pool: &ThreadPool,
+) -> Vec<f32> {
+    let bins_usize = bins as usize;
+    let x_min = x_edges[0];
+    let x_max = *x_edges.last().unwrap_or(&x_min);
+    let y_min = y_edges[0];
+    let y_max = *y_edges.last().unwrap_or(&y_min);
+
+    let dx = (x_max - x_min) / bins as f32;
+    let dy = (y_max - y_min) / bins as f32;
+    let dx_inv = if dx != 0.0 { 1.0 / dx } else { 0.0 };
+    let dy_inv = if dy != 0.0 { 1.0 / dy } else { 0.0 };
+
+    let total_bins = bins_usize * bins_usize;
+
+    let combined_u32 =
+        histogram_counts(system, x_min, y_min, dx_inv, dy_inv, bins, total_bins, pool);
+
+    combined_u32.into_iter().map(|c| c as f32).collect()
 }
 
 fn bresenham_points(mut x0: i64, mut y0: i64, x1: i64, y1: i64) -> Vec<(i64, i64)> {
@@ -453,7 +468,7 @@ fn precompute_boundary_pixels(
         })
         .collect();
 
-    all_pts.sort_unstable(); // error: Method `sort_unstable` not found in the current scope for type `Vec<(i64, i64)>` [E0599]
+    all_pts.sort_unstable();
     all_pts.dedup();
     all_pts
 }
@@ -927,37 +942,8 @@ fn compute_out_px(dpi: u32) -> (u32, u32) {
     (size, size)
 }
 
-pub fn run_frame_generation(
-    mut sim_data: SimulationData,
-    config: &Config,
-    n_frames: u64,
-    start_frame: u64,
-    output_path: &str,
-    fps: u64,
-) -> Result<f64, Box<dyn Error>> {
-    let (width, height) = compute_out_px(config.dpi);
-    let start_time = Instant::now();
-    let total_to_generate = if n_frames > start_frame { n_frames - start_frame } else { 0 };
-    let pb = ProgressBar::new(total_to_generate);
-
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{prefix} {bar:40.cyan/blue} {pos:>7}/{len:7} {percent:>3}% ({eta})")?
-            .progress_chars("##-"),
-    );
-
-    pb.set_prefix("Generating frames");
-
-    let bins = config.res as usize;
-    let total_bins = bins * bins;
-
-    let mut histogram_buf = vec![0f32; total_bins];
-    let mut h_log_flat = vec![0f32; total_bins];
-
-    let mut cmd = Command::new("ffmpeg");
+fn build_ffmpeg_args(width: u32, height: u32, fps: u64, output_path: &str) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
-
-    // TODO: make a macro for this
     args.push("-y".to_string());
     args.push("-hide_banner".to_string());
     args.push("-loglevel".to_string());
@@ -989,6 +975,38 @@ pub fn run_frame_generation(
     args.push("-progress".to_string());
     args.push("pipe:1".to_string());
     args.push(output_path.to_string());
+    args
+}
+
+pub fn run_frame_generation(
+    mut sim_data: SimulationData,
+    config: &Config,
+    n_frames: u64,
+    start_frame: u64,
+    output_path: &str,
+    fps: u64,
+) -> Result<f64, Box<dyn Error>> {
+    let (width, height) = compute_out_px(config.dpi);
+    let start_time = Instant::now();
+    let total_to_generate = if n_frames > start_frame { n_frames - start_frame } else { 0 };
+    let pb = ProgressBar::new(total_to_generate);
+
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{prefix} {bar:40.cyan/blue} {pos:>7}/{len:7} {percent:>3}% ({eta})")?
+            .progress_chars("##-"),
+    );
+
+    pb.set_prefix("Generating frames");
+
+    let bins = config.res as usize;
+    let total_bins = bins * bins;
+
+    let mut histogram_buf = vec![0f32; total_bins];
+    let mut h_log_flat = vec![0f32; total_bins];
+
+    let mut cmd = Command::new("ffmpeg");
+    let args = build_ffmpeg_args(width, height, fps, output_path);
 
     cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
 
