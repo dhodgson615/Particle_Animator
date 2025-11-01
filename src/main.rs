@@ -1,6 +1,7 @@
-use ahash::{AHashMap, AHashSet};
+use ahash::{AHashMap};
 use chrono::Utc;
 use clap::Parser;
+use cmp::max;
 use crossbeam_channel::bounded;
 use image::RgbImage;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -14,6 +15,7 @@ use serde_json::{
     from_str, json, to_string_pretty,
 };
 use std::{
+    cmp,
     error::Error,
     f32::consts::PI,
     fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
@@ -21,8 +23,8 @@ use std::{
     path::{Path, PathBuf},
     process::{self, Command, Stdio},
     sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering::Relaxed},
+        Arc, Mutex,
+        atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
     },
     thread,
     time::{Duration, Instant},
@@ -32,26 +34,26 @@ use thread::scope;
 #[global_allocator]
 static GLOBAL_ALLOC: MiMalloc = MiMalloc;
 
-const A: f32 = 2.5;
+const A: f32 = 1.0;
 const B: f32 = 1.0;
-const N_EXP: f32 = 4.0;
-const M_EXP: f32 = 3.0;
-const DT: f32 = 0.001;
+const N_EXP: f32 = 2.0;
+const M_EXP: f32 = 2.0;
+const DT: f32 = 0.0001; // change back to 0.001
 const EPSILON: f32 = 1e-8;
-const CEN_X: f32 = 0.75;
-const CEN_Y: f32 = 0.25;
-const RADIUS: f32 = 0.5;
-const VX0: f32 = 3.0;
+const CEN_X: f32 = 0.1;
+const CEN_Y: f32 = -0.1;
+const RADIUS: f32 = 0.1;
+const VX0: f32 = 1.0;
 const VY0: f32 = 0.0;
-const N_PARTICLES: u64 = 10000;
+const N_PARTICLES: u64 = 1000;
 const FPS: u64 = 60;
 const DURATION_S: u64 = 10;
-const STEPS_PER_FRAME: u64 = 30;
-const RES: u32 = 256;
+const STEPS_PER_FRAME: u64 = 300; // change back to 30
+const RES: u32 = 932;
 const DPI: u32 = 300;
-const HISTOGRAM_FACTOR: f32 = 1.2;
+const HISTOGRAM_FACTOR: f32 = 1.25;
 
-const SHAPE_SAMPLE_POINTS: usize = 400;
+const SHAPE_SAMPLE_POINTS: usize = 1000;
 const SEED_MULTIPLIER: u64 = 0x9E3779B97F4A7C15;
 const FIG_INCHES: f32 = 8.0;
 const BOUNDARY_THICKNESS: usize = 2;
@@ -274,29 +276,42 @@ fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
     let (width, height) = out_px;
     let w = width as usize;
     let h = height as usize;
-    let mut map = Vec::with_capacity(w * h);
-    for y in 0..h {
-        let bin_y = (y * bins) / h;
-        for x in 0..w {
-            let bin_x = (x * bins) / w;
-            let idx = bin_y * bins + bin_x;
-            map.push(idx);
-        }
+    let total = w.saturating_mul(h);
+
+    if total == 0 || bins == 0 {
+        return Vec::new();
     }
-    map
+
+    (0..total)
+        .into_par_iter()
+        .map(|i| {
+            let y = i / w;
+            let x = i % w;
+            let bin_y = (y * bins) / h;
+            let bin_x = (x * bins) / w;
+            bin_y * bins + bin_x
+        })
+        .collect()
 }
 
 fn precompute_thickness_offsets(thickness: usize) -> Vec<(i64, i64)> {
     let r = thickness as i64;
-    let mut offs = Vec::new();
-    for dy in -r..=r {
-        for dx in -r..=r {
-            if dx * dx + dy * dy <= r * r {
-                offs.push((dx, dy));
+    let rr = r * r;
+
+    let per_rows: Vec<Vec<(i64, i64)>> = (-r..=r)
+        .into_par_iter()
+        .map(|dy| {
+            let rem = rr - dy * dy;
+            if rem >= 0 {
+                let dx_lim = (rem as f64).sqrt() as i64;
+                (-dx_lim..=dx_lim).into_par_iter().map(move |dx| (dx, dy)).collect()
+            } else {
+                Vec::new()
             }
-        }
-    }
-    offs
+        })
+        .collect();
+
+    per_rows.into_par_iter().flat_map(|row| row.into_par_iter()).collect()
 }
 
 pub fn compute_histogram(
@@ -396,47 +411,55 @@ fn precompute_boundary_pixels(
     let y_span = (y_edges.last().cloned().unwrap_or(0.0) - y_edges[0]).abs().max(1e-6);
 
     let orig_n = bx.len().max(1);
-    let mut sampled_pts: Vec<(i64, i64)> = Vec::with_capacity(bins);
-    for k in 0..bins {
-        let idxf = (k as f32) * (orig_n as f32) / (bins as f32);
-        let i0 = idxf.floor() as usize % orig_n;
-        let i1 = (i0 + 1) % orig_n;
-        let frac = idxf - idxf.floor();
-        let bx_val = bx[i0] * (1.0 - frac) + bx[i1] * frac;
-        let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
 
-        let mut x = ((bx_val - x_edges[0]) / x_span * (width - 1) as f32).round() as i64;
-        let mut y = height as i64
-            - 1
-            - ((by_val - y_edges[0]) / y_span * (height - 1) as f32).round() as i64;
+    let sampled_pts: Vec<(i64, i64)> = (0..bins)
+        .into_par_iter()
+        .map(|k| {
+            let idxf = (k as f32) * (orig_n as f32) / (bins as f32);
+            let i0 = idxf.floor() as usize % orig_n;
+            let i1 = (i0 + 1) % orig_n;
+            let frac = idxf - idxf.floor();
+            let bx_val = bx[i0] * (1.0 - frac) + bx[i1] * frac;
+            let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
 
-        if x < 0 {
-            x = 0
-        }
-        if y < 0 {
-            y = 0
-        }
-        if x >= width as i64 {
-            x = (width - 1) as i64
-        }
-        if y >= height as i64 {
-            y = (height - 1) as i64
-        }
+            let mut x = ((bx_val - x_edges[0]) / x_span * (width - 1) as f32).round() as i64;
+            let mut y = height as i64
+                - 1
+                - ((by_val - y_edges[0]) / y_span * (height - 1) as f32).round() as i64;
 
-        sampled_pts.push((x, y));
-    }
+            if x < 0 {
+                x = 0
+            }
+            if y < 0 {
+                y = 0
+            }
+            if x >= width as i64 {
+                x = (width - 1) as i64
+            }
+            if y >= height as i64 {
+                y = (height - 1) as i64
+            }
 
-    let mut set: AHashSet<(i64, i64)> = AHashSet::new();
-    for i in 0..sampled_pts.len() {
-        let a = sampled_pts[i];
-        let b = sampled_pts[(i + 1) % sampled_pts.len()];
-        let line_pts = bresenham_points(a.0, a.1, b.0, b.1);
-        for p in line_pts {
-            set.insert(p);
-        }
-    }
+            (x, y)
+        })
+        .collect();
 
-    set.into_iter().collect()
+    // generate all line points in parallel, flatten, then sort+dedup to deduplicate without locks
+    let n = sampled_pts.len();
+    let mut all_pts: Vec<(i64, i64)> = (0..n)
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let a = sampled_pts[i];
+            let b = sampled_pts[(i + 1) % n];
+            bresenham_points(a.0, a.1, b.0, b.1)
+        })
+        .collect();
+
+    // sort and dedup on the CPU thread (deterministic and lock-free)
+    all_pts.sort_unstable();
+    all_pts.dedup();
+
+    all_pts
 }
 
 fn draw_boundary(
@@ -478,94 +501,20 @@ fn draw_boundary(
 
         image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
             let base_row_idx = y * w;
-            for x in 0..w {
+
+            // inner loop: operate on 3-byte chunks (RGB) for cache-friendly writes
+            for (x, pixel) in row.chunks_mut(3).enumerate() {
                 let idx = base_row_idx + x;
                 if atoms[idx].load(Relaxed) != 0 {
-                    let base = x * 3;
-                    if base + 2 < row.len() {
-                        row[base] = 255;
-                        row[base + 1] = 255;
-                        row[base + 2] = 255;
+                    if pixel.len() >= 3 {
+                        pixel[0] = 255;
+                        pixel[1] = 255;
+                        pixel[2] = 255;
                     }
                 }
             }
         });
     });
-}
-
-pub fn render(
-    hist: &[f32],
-    bres_pixels: &[(i64, i64)],
-    palette: &[Vector3D<u8>],
-    out_px: (u32, u32),
-    pool: &ThreadPool,
-    pixel_bin_map: &[usize],
-    thickness_offsets: &[(i64, i64)],
-) -> RgbImage {
-    let (width, height) = out_px;
-
-    let (vmin, vmax) = pool.install(|| {
-        hist.par_chunks(1024)
-            .fold(
-                || (f32::MAX, f32::MIN),
-                |(min, max), chunk| {
-                    let chunk_min = chunk.iter().fold(f32::MAX, |a, &b| a.min(b));
-                    let chunk_max = chunk.iter().fold(f32::MIN, |a, &b| a.max(b));
-                    (min.min(chunk_min), max.max(chunk_max))
-                },
-            )
-            .reduce(
-                || (f32::MAX, f32::MIN),
-                |(min1, max1), (min2, max2)| (min1.min(min2), max1.max(max2)),
-            )
-    });
-
-    let vmin_clamped = vmin.max(1e-12);
-    let vmax_clamped = vmax.max(vmin_clamped);
-
-    let ln_min = vmin_clamped.ln();
-    let ln_max = vmax_clamped.ln();
-
-    let ln_range_inv = if (ln_max - ln_min).abs() > 0.0 { 1.0 / (ln_max - ln_min) } else { 0.0 };
-
-    let palette_max = palette.len() - 1;
-    let palette_scale = palette_max as f32;
-
-    let small: Vec<[u8; 3]> = pool.install(|| {
-        hist.par_iter()
-            .map(|&v| {
-                let nval =
-                    if v <= 0.0 { 0.0 } else { ((v.ln() - ln_min) * ln_range_inv).clamp(0.0, 1.0) };
-                let palette_idx = (nval * palette_scale).round() as usize;
-                let palette_idx = palette_idx.clamp(0, palette_max);
-                palette[palette_idx]
-            })
-            .collect()
-    });
-
-    let mut image = RgbImage::new(width, height);
-
-    let w = width as usize;
-
-    pool.install(|| {
-        image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
-            let row_base = y * w;
-            for x in 0..width as usize {
-                let small_idx = pixel_bin_map[row_base + x];
-                let [r, g, b] = small[small_idx];
-                let base = x * 3;
-                if base + 2 < row.len() {
-                    row[base] = r;
-                    row[base + 1] = g;
-                    row[base + 2] = b;
-                }
-            }
-        });
-    });
-
-    draw_boundary(&mut image, bres_pixels, width, height, thickness_offsets, pool);
-
-    image
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -723,50 +672,71 @@ pub fn step_simd(
 
             i += LANES;
         } else {
-            for j in i..n {
-                let px = system.x[j] + system.vx[j] * dt;
-                let py = system.y[j] + system.vy[j] * dt;
-                let xna = px.abs() * inv_a;
-                let ynb = py.abs() * inv_b;
-                let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
+            // Wrap raw pointers into Arc<AtomicPtr<_>> to satisfy Sync required by Rayon,
+            // then load the pointer inside each thread and perform unsafe reads/writes.
+            use std::sync::atomic::Ordering;
 
-                if val <= 0.0 {
-                    system.x[j] = px;
-                    system.y[j] = py;
-                    continue;
+            let x_atomic = Arc::new(AtomicPtr::new(system.x.as_mut_ptr()));
+            let y_atomic = Arc::new(AtomicPtr::new(system.y.as_mut_ptr()));
+            let vx_atomic = Arc::new(AtomicPtr::new(system.vx.as_mut_ptr()));
+            let vy_atomic = Arc::new(AtomicPtr::new(system.vy.as_mut_ptr()));
+
+            (i..n).into_par_iter().for_each(|j| {
+                // load pointer (cheap, atomic) then do unsafe work on distinct indices
+                let x_ptr = x_atomic.load(Ordering::Relaxed);
+                let y_ptr = y_atomic.load(Ordering::Relaxed);
+                let vx_ptr = vx_atomic.load(Ordering::Relaxed);
+                let vy_ptr = vy_atomic.load(Ordering::Relaxed);
+
+                unsafe {
+                    let xj = *x_ptr.add(j);
+                    let yj = *y_ptr.add(j);
+                    let vxj = *vx_ptr.add(j);
+                    let vyj = *vy_ptr.add(j);
+
+                    let px = xj + vxj * dt;
+                    let py = yj + vyj * dt;
+                    let xna = px.abs() * inv_a;
+                    let ynb = py.abs() * inv_b;
+                    let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
+
+                    if val <= 0.0 {
+                        *x_ptr.add(j) = px;
+                        *y_ptr.add(j) = py;
+                        return;
+                    }
+
+                    let sign_x = px.signum();
+                    let sign_y = py.signum();
+
+                    let xpow = pow_fast(px.abs() * inv_a, n_exp - 1.0);
+                    let ypow = pow_fast(py.abs() * inv_b, m_exp - 1.0);
+
+                    let df_dx = n_exp * inv_a * xpow * sign_x;
+                    let df_dy = m_exp * inv_b * ypow * sign_y;
+                    let len2 = df_dx * df_dx + df_dy * df_dy;
+
+                    if len2 <= eps2 || len2 == 0.0 {
+                        *x_ptr.add(j) = px;
+                        *y_ptr.add(j) = py;
+                        return;
+                    }
+
+                    let inv_len = 1.0 / len2.sqrt();
+                    let nx = df_dx * inv_len;
+                    let ny = df_dy * inv_len;
+
+                    let vxn = vxj * nx + vyj * ny;
+                    let rx = vxj - 2.0 * vxn * nx;
+                    let ry = vyj - 2.0 * vxn * ny;
+
+                    *vx_ptr.add(j) = rx;
+                    *vy_ptr.add(j) = ry;
+                    *x_ptr.add(j) = px - rx * epsilon;
+                    *y_ptr.add(j) = py - ry * epsilon;
                 }
+            });
 
-                let sign_x = px.signum();
-                let sign_y = py.signum();
-
-                let xpow = pow_fast(px.abs() * inv_a, n_exp - 1.0);
-                let ypow = pow_fast(py.abs() * inv_b, m_exp - 1.0);
-
-                let df_dx = n_exp * inv_a * xpow * sign_x;
-                let df_dy = m_exp * inv_b * ypow * sign_y;
-                let len2 = df_dx * df_dx + df_dy * df_dy;
-
-                if len2 <= eps2 || len2 == 0.0 {
-                    system.x[j] = px;
-                    system.y[j] = py;
-                    continue;
-                }
-
-                let inv_len = 1.0 / len2.sqrt();
-                let nx = df_dx * inv_len;
-                let ny = df_dy * inv_len;
-
-                let vx = system.vx[j];
-                let vy = system.vy[j];
-                let vxn = vx * nx + vy * ny;
-                let rx = vx - 2.0 * vxn * nx;
-                let ry = vy - 2.0 * vxn * ny;
-
-                system.vx[j] = rx;
-                system.vy[j] = ry;
-                system.x[j] = px - rx * epsilon;
-                system.y[j] = py - ry * epsilon;
-            }
             break;
         }
     }
@@ -830,7 +800,35 @@ pub fn init_cluster(
                 let vy_ptr = vy_addr as *mut f32;
 
                 let mut seed = seed0;
-                for i in 0..len {
+
+                // Simple 4-way unrolled loop to reduce per-iteration overhead (vectorization-friendly)
+                let mut i = 0usize;
+                while i + 4 <= len {
+                    for k in 0..4 {
+                        let s1 = splitmix64(seed);
+                        seed = s1;
+                        let s2 = splitmix64(seed);
+                        seed = s2;
+
+                        let u1 = (s1 as f64) / ((u64::MAX as f64) + 1.0);
+                        let u2 = (s2 as f64) / ((u64::MAX as f64) + 1.0);
+
+                        let r = radius * (u1.sqrt() as f32);
+                        let theta = (u2 as f32) * 2.0 * PI;
+
+                        unsafe {
+                            let idx = start + i + k;
+                            *x_ptr.add(idx) = r * theta.cos() + center_x;
+                            *y_ptr.add(idx) = r * theta.sin() + center_y;
+                            *vx_ptr.add(idx) = vx0;
+                            *vy_ptr.add(idx) = vy0;
+                        }
+                    }
+                    i += 4;
+                }
+
+                // Remainder
+                for j in i..len {
                     let s1 = splitmix64(seed);
                     seed = s1;
                     let s2 = splitmix64(seed);
@@ -843,7 +841,7 @@ pub fn init_cluster(
                     let theta = (u2 as f32) * 2.0 * PI;
 
                     unsafe {
-                        let idx = start + i;
+                        let idx = start + j;
                         *x_ptr.add(idx) = r * theta.cos() + center_x;
                         *y_ptr.add(idx) = r * theta.sin() + center_y;
                         *vx_ptr.add(idx) = vx0;
@@ -875,7 +873,7 @@ impl SimulationData {
     pub fn new(config: &Config, start_frame: u64) -> Self {
         let default_cpus = num_cpus::get();
         let sim_threads = config.sim_threads.unwrap_or(default_cpus);
-        let render_threads = config.render_threads.unwrap_or(std::cmp::max(1, default_cpus / 2));
+        let render_threads = config.render_threads.unwrap_or(max(1, default_cpus / 2));
 
         let sim_pool = Arc::new(
             ThreadPoolBuilder::new()
@@ -979,47 +977,48 @@ pub fn run_frame_generation(
     let mut histogram_buf = vec![0f32; total_bins];
     let mut h_log_flat = vec![0f32; total_bins];
 
+    // Consolidate ffmpeg args into a vector to avoid repetitive `.arg(...)` calls
     let mut cmd = Command::new("ffmpeg");
+    let mut args: Vec<String> = Vec::new();
 
-    cmd.arg("-y")
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-f")
-        .arg("rawvideo")
-        .arg("-pix_fmt")
-        .arg("rgb24")
-        .arg("-video_size")
-        .arg(format!("{}x{}", width, height))
-        .arg("-framerate")
-        .arg(fps.to_string())
-        .arg("-i")
-        .arg("-")
-        .arg("-vf")
-        .arg("pad=ceil(iw/2)*2:ceil(ih/2)*2")
-        .arg("-c:v")
-        .arg("libx264")
-        .arg("-crf")
-        .arg("12")
-        .arg("-preset")
-        .arg("slow")
-        .arg("-profile:v")
-        .arg("high")
-        .arg("-pix_fmt")
-        .arg("yuv420p")
-        .arg("-movflags")
-        .arg("+faststart")
-        .arg("-progress")
-        .arg("pipe:1")
-        .arg(output_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    args.push("-y".to_string());
+    args.push("-hide_banner".to_string());
+    args.push("-loglevel".to_string());
+    args.push("error".to_string());
+    args.push("-f".to_string());
+    args.push("rawvideo".to_string());
+    args.push("-pix_fmt".to_string());
+    args.push("rgb24".to_string());
+    args.push("-video_size".to_string());
+    args.push(format!("{}x{}", width, height));
+    args.push("-framerate".to_string());
+    args.push(fps.to_string());
+    args.push("-i".to_string());
+    args.push("-".to_string());
+    args.push("-vf".to_string());
+    args.push("pad=ceil(iw/2)*2:ceil(ih/2)*2".to_string());
+    args.push("-c:v".to_string());
+    args.push("libx264".to_string());
+    args.push("-crf".to_string());
+    args.push("12".to_string());
+    args.push("-preset".to_string());
+    args.push("slow".to_string());
+    args.push("-profile:v".to_string());
+    args.push("high".to_string());
+    args.push("-pix_fmt".to_string());
+    args.push("yuv420p".to_string());
+    args.push("-movflags".to_string());
+    args.push("+faststart".to_string());
+    args.push("-progress".to_string());
+    args.push("pipe:1".to_string());
+    args.push(output_path.to_string());
+
+    cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
 
     let mut child = cmd.spawn()?;
     let child_stdin = child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
 
-    let (tx, rx) = bounded::<RgbImage>(16);
+    let (tx, rx) = bounded::<RgbImage>(12);
 
     scope(|s| -> Result<(), Box<dyn Error>> {
         let writer_handle = s.spawn(move || {
@@ -1337,25 +1336,36 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
         return Ok(1);
     }
 
-    let mut used_indices: AHashSet<u64> = AHashSet::new();
+    let paths: Vec<PathBuf> =
+        read_dir(mp4_dir)?.filter_map(Result::ok).map(|entry| entry.path()).collect();
 
-    for entry in read_dir(mp4_dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    let used_indices = Arc::new(Mutex::new(AHashSet::new()));
 
+    paths.par_iter().for_each(|path| {
         if path.extension().map_or(false, |ext| ext == "mp4") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                try_insert_numeric(stem, &mut used_indices);
+                if let Ok(mut set) = used_indices.lock() {
+                    // deduplicate the logic by using try_insert_numeric
+                    try_insert_numeric(stem, &mut set);
+                }
             }
         } else if path.is_dir() {
             if let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) {
-                try_insert_numeric(dir_name, &mut used_indices);
+                if let Ok(mut set) = used_indices.lock() {
+                    // deduplicate the logic by using try_insert_numeric
+                    try_insert_numeric(dir_name, &mut set);
+                }
             }
         }
-    }
+    });
 
-    for i in 1.. {
-        if !used_indices.contains(&i) {
+    let used_snapshot = {
+        let guard = used_indices.lock().map_err(|e| format!("Mutex poisoned: {}", e))?;
+        guard.clone()
+    };
+
+    for i in 1u64.. {
+        if !used_snapshot.contains(&i) {
             return Ok(i);
         }
     }
@@ -1490,4 +1500,68 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
 
     Ok(())
+}
+
+fn render(
+    h_log_flat: &[f32],
+    boundary_pixels: &Arc<Vec<(i64, i64)>>,
+    palette: &Arc<Vec<[u8; 3]>>,
+    out_px: (u32, u32),
+    pool: &Arc<ThreadPool>,
+    pixel_bin_map: &Arc<Vec<usize>>,
+    thickness_offsets: &Arc<Vec<(i64, i64)>>,
+) -> RgbImage {
+    let (width, height) = out_px;
+    let w = width as usize;
+
+    let mut img = RgbImage::new(width, height);
+
+    // precompute scale based on per-frame max to avoid per-pixel repeated work
+    let palette_len = palette.len();
+    let max_v = h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
+    // avoid divide by zero; small epsilon and mild boost to keep colors varied
+    let scale =
+        if max_v > 0.0 { (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32) } else { 1.0 };
+
+    // copy palette reference for faster indexing
+    let palette_ref: &[[u8; 3]] = &palette;
+
+    pool.install(|| {
+        img.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
+            let base_idx = y * w;
+            for (x, pixel) in row.chunks_mut(3).enumerate() {
+                let idx = base_idx + x;
+                if idx >= pixel_bin_map.len() {
+                    pixel[0] = 0;
+                    pixel[1] = 0;
+                    pixel[2] = 0;
+                    continue;
+                }
+                let bin = pixel_bin_map[idx];
+                if bin >= h_log_flat.len() {
+                    pixel[0] = 0;
+                    pixel[1] = 0;
+                    pixel[2] = 0;
+                    continue;
+                }
+                let v = h_log_flat[bin].max(0.0);
+                let pi = ((v.sqrt() * scale) as usize).min(palette_len - 1);
+                let col = palette_ref[pi];
+                pixel[0] = col[0];
+                pixel[1] = col[1];
+                pixel[2] = col[2];
+            }
+        });
+    });
+
+    draw_boundary(
+        &mut img,
+        &boundary_pixels.as_ref(),
+        width,
+        height,
+        &thickness_offsets.as_ref(),
+        pool,
+    );
+
+    img
 }

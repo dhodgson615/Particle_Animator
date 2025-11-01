@@ -1,0 +1,32 @@
+- Add actual unit tests and benchmarks.
+- Set up continuous integration (CI) for automated testing.
+- Find a good profiling tool to identify bottlenecks.
+- Find ways to reduce memory allocations and copies.
+- Consider `parking_lot` for faster mutexes.
+- Consider adding `core_affinity` for CPU pinning.
+- Tune `RUSTFLAGS` for performance optimizations.
+- Look into SIMD optimizations for data processing tasks.
+- Find an easy GPU library for offloading compute-heavy rendering tasks.
+- Add config variables for thread counts with safe error handling.
+- Add `integration_steps` variable for controlling simulation accuracy vs performance.
+- Make the progress bar shorter but more informative.
+- Add more detailed logging for debugging performance issues.
+- Add flags for tracking memory usage over time, allocations, thrashing, FFmpeg performance, etc.
+- Explore alternative data structures for better cache locality.
+- Add an option for taking the bounds of the simulation from an external image for more complex shapes.
+- Add an option to take the bounds of the cluster from an external image for more complex shapes.
+- Add an option to export simulation data for visualization in external tools.
+- Add an option to have slightly randomized initial velocities and other parameters for more natural results.
+- Add support for different particle interaction models (e.g., gravitational, electromagnetic).
+- Look into supporting 3D simulations in addition to 2D.
+- Add initial estimates for simulation time based on current parameters and system performance.
+- Throw an error if the initial cluster is out of the bounds of the simulation.
+- Attempt to use an arena allocator for better memory management.
+- Reuse buffers where possible to reduce freeing and reallocating memory.
+- Look into creating a custom memory allocator tailored to the application's needs.
+- Look into cross platform GPU libraries that work on Mac (including/especially Apple Silicon) and Linux, such as `wgpu` or `vulkan`.
+- Add a command line flag for enabling/disabling GPU acceleration.
+- Prototype GPU acceleration for compute-heavy tasks and benchmark against CPU-only implementation.
+- Find out if shaders
+- Find ways to overlap CPU and GPU work to maximize resource utilization.
+- Consider adding web support using WebAssembly (WASM) and publishing a web version of the tool.

@@ -6,15 +6,15 @@ edition = "2024"
 [dependencies]
 ahash = { version = "0.8.12" }
 chrono = { version = "0.4.42" }
-clap = { version = "4.4", features = ["derive"] }
-crossbeam-channel = { version = "0.5" }
+clap = { version = "4.5.51", features = ["derive"] }
+crossbeam-channel = { version = "0.5.15" }
 image = { version = "0.25.8" }
 indicatif = { version = "0.18.2" }
 num_cpus = { version = "1.17.0" }
-rayon = { version = "1.7" }
-serde = { version = "1.0", features = ["derive"] }
+rayon = { version = "1.11.0" }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0" }
-mimalloc = "0.1"
+mimalloc = "0.1.48"
 
 [profile.release]
 opt-level = 3                # maximize LLVM optimizations for runtime speed
@@ -25,3 +25,6 @@ incremental = false          # turn off incremental compilation for a clean full
 overflow-checks = false      # remove integer overflow checks for speed (unsafe if overflows may occur)
 panic = "abort"              # abort on panic (no unwinding overhead)
 strip = "symbols"            # strip symbols from the final binary to reduce size
+optimize-attributes = true   # enable optimizations based on function attributes
+debug-assertions = false     # disable debug assertions for performance
+test = false                 # disable test code in release builds
