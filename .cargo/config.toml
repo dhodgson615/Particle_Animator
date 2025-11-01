@@ -1,5 +1,7 @@
 [build]
 rustflags = [
     "-C", "target-cpu=native",
-    "-Cllvm-args=--inline-threshold=10000",  # ranges from 0 to 100000
+    "-Cllvm-args=--inline-threshold=100000",  # Range: 0-100000, higher is more aggressive inlining
+    "-Cllvm-args=--unroll-threshold=1000",   # Range: 0-100000, higher is more aggressive unrolling
+    # "-Cllvm-args=--inline-call-penalty=900",  # Range: 0-1000, lower is more aggressive inlining
 ]
