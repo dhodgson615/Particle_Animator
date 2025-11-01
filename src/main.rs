@@ -1517,7 +1517,6 @@ pub fn compute_histogram_inplace(
 ) {
     let bins_usize = bins as usize;
     let total_bins = bins_usize * bins_usize;
-    let n = system.len();
 
     let x_min = x_edges[0];
     let x_max = *x_edges.last().unwrap_or(&x_min);
@@ -1529,36 +1528,8 @@ pub fn compute_histogram_inplace(
     let dx_inv = if dx != 0.0 { 1.0 / dx } else { 0.0 };
     let dy_inv = if dy != 0.0 { 1.0 / dy } else { 0.0 };
 
-    let combined: Vec<u32> = pool.install(|| {
-        // TODO: deduplicate code with above with a macro or function
-        (0..n)
-            .into_par_iter()
-            .fold(
-                || vec![0u32; total_bins],
-                |mut local, idx| {
-                    let px = system.x[idx];
-                    let py = system.y[idx];
-
-                    let ix = ((px - x_min) * dx_inv) as i32;
-                    let iy = ((py - y_min) * dy_inv) as i32;
-
-                    if ix >= 0 && ix < bins as i32 && iy >= 0 && iy < bins as i32 {
-                        let id = (iy as usize) * bins_usize + (ix as usize);
-                        local[id] = local[id].wrapping_add(1);
-                    }
-                    local
-                },
-            )
-            .reduce(
-                || vec![0u32; total_bins],
-                |mut a, b| {
-                    for (i, v) in b.into_iter().enumerate() {
-                        a[i] = a[i].wrapping_add(v);
-                    }
-                    a
-                },
-            )
-    });
+    let combined: Vec<u32> =
+        histogram_counts(system, x_min, y_min, dx_inv, dy_inv, bins, total_bins, pool);
 
     for (i, &c) in combined.iter().enumerate().take(total_bins) {
         out[i] = c as f32;
