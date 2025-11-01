@@ -1,4 +1,4 @@
-use ahash::{AHashMap};
+use ahash::AHashMap;
 use chrono::Utc;
 use clap::Parser;
 use cmp::max;
@@ -24,7 +24,7 @@ use std::{
     process::{self, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
+        atomic::{AtomicPtr, AtomicU32, Ordering, Ordering::Relaxed},
     },
     thread,
     time::{Duration, Instant},
@@ -406,11 +406,13 @@ fn precompute_boundary_pixels(
     use ahash::AHashSet;
 
     let (width, height) = out_px;
-    let bins = sample_n.max(3);
+    let bins = sample_n.max(3); // error: This function takes 0 parameters, but 1
+    //        parameter was supplied [E0061]
     let x_span = (x_edges.last().cloned().unwrap_or(0.0) - x_edges[0]).abs().max(1e-6);
     let y_span = (y_edges.last().cloned().unwrap_or(0.0) - y_edges[0]).abs().max(1e-6);
 
-    let orig_n = bx.len().max(1);
+    let orig_n = bx.len().max(1); // error: This function takes 0 parameters, but 1
+    //        parameter was supplied [E0061]
 
     let sampled_pts: Vec<(i64, i64)> = (0..bins)
         .into_par_iter()
@@ -444,7 +446,6 @@ fn precompute_boundary_pixels(
         })
         .collect();
 
-    // generate all line points in parallel, flatten, then sort+dedup to deduplicate without locks
     let n = sampled_pts.len();
     let mut all_pts: Vec<(i64, i64)> = (0..n)
         .into_par_iter()
@@ -455,10 +456,9 @@ fn precompute_boundary_pixels(
         })
         .collect();
 
-    // sort and dedup on the CPU thread (deterministic and lock-free)
-    all_pts.sort_unstable();
+    all_pts.sort_unstable(); // error: Method `sort_unstable` not found in the current scope for
+    //        type `Vec<(i64, i64)>` [E0599]
     all_pts.dedup();
-
     all_pts
 }
 
@@ -482,27 +482,33 @@ fn draw_boundary(
 
     pool.install(|| {
         bresenham_px.par_iter().for_each(|&(lx, ly)| {
-            let atoms = atoms.clone();
+            let atoms = atoms.clone(); // error: Method `clone` not found in the current scope for
+            //        type `Arc<Vec<AtomicU32>>` [E0599]
             offsets.iter().for_each(|&(dx, dy)| {
                 let px = lx + dx;
                 let py = ly + dy;
+
                 if px < 0 || py < 0 {
                     return;
                 }
+
                 let pxu = px as usize;
                 let pyu = py as usize;
+
                 if pxu >= w || pyu >= h {
                     return;
                 }
+
                 let idx = pyu * w + pxu;
                 atoms[idx].store(1, Relaxed);
             });
         });
 
         image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
+            // error: Value used after being moved [E0382]
             let base_row_idx = y * w;
 
-            // inner loop: operate on 3-byte chunks (RGB) for cache-friendly writes
+            // TODO: parallelize for SIMD
             for (x, pixel) in row.chunks_mut(3).enumerate() {
                 let idx = base_row_idx + x;
                 if atoms[idx].load(Relaxed) != 0 {
@@ -533,6 +539,7 @@ pub struct ParticleSystem {
 }
 
 impl Default for ParticleSystem {
+    // error: Cannot find trait `Default` in this scope [E0405]
     fn default() -> Self {
         Self { x: Vec::new(), y: Vec::new(), vx: Vec::new(), vy: Vec::new() }
     }
@@ -540,7 +547,7 @@ impl Default for ParticleSystem {
 
 impl ParticleSystem {
     pub fn new() -> Self {
-        Self::default()
+        Self::default() // error: Cannot find function `default` in this scope [E0425]
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
@@ -617,6 +624,7 @@ pub fn step_simd(
             let mut avx = [0.0f32; LANES];
             let mut avy = [0.0f32; LANES];
 
+            // TODO: load with SIMD
             for j in 0..LANES {
                 ax[j] = system.x[i + j];
                 ay[j] = system.y[i + j];
@@ -624,6 +632,7 @@ pub fn step_simd(
                 avy[j] = system.vy[i + j];
             }
 
+            // TODO: parallelize with SIMD
             for j in 0..LANES {
                 let px = ax[j] + avx[j] * dt;
                 let py = ay[j] + avy[j] * dt;
@@ -672,21 +681,20 @@ pub fn step_simd(
 
             i += LANES;
         } else {
-            // Wrap raw pointers into Arc<AtomicPtr<_>> to satisfy Sync required by Rayon,
-            // then load the pointer inside each thread and perform unsafe reads/writes.
-            use std::sync::atomic::Ordering;
-
             let x_atomic = Arc::new(AtomicPtr::new(system.x.as_mut_ptr()));
             let y_atomic = Arc::new(AtomicPtr::new(system.y.as_mut_ptr()));
             let vx_atomic = Arc::new(AtomicPtr::new(system.vx.as_mut_ptr()));
             let vy_atomic = Arc::new(AtomicPtr::new(system.vy.as_mut_ptr()));
 
             (i..n).into_par_iter().for_each(|j| {
-                // load pointer (cheap, atomic) then do unsafe work on distinct indices
-                let x_ptr = x_atomic.load(Ordering::Relaxed);
-                let y_ptr = y_atomic.load(Ordering::Relaxed);
-                let vx_ptr = vx_atomic.load(Ordering::Relaxed);
-                let vy_ptr = vy_atomic.load(Ordering::Relaxed);
+                let x_ptr = x_atomic.load(Relaxed); // error: Method `load` not found in current
+                //        scope
+                let y_ptr = y_atomic.load(Relaxed); // error: Method `load` not found in current
+                //        scope
+                let vx_ptr = vx_atomic.load(Relaxed); // error: Method `load` not found in current
+                //        scope
+                let vy_ptr = vy_atomic.load(Relaxed); // error: Method `load` not found in current
+                // scope
 
                 unsafe {
                     let xj = *x_ptr.add(j);
@@ -775,7 +783,9 @@ pub fn init_cluster(
         z ^ (z >> 31)
     }
 
-    let num_threads = num_cpus::get().min(n_usize.max(1));
+    let num_threads = num_cpus::get().min(n_usize.max(1)); // error: This function takes 0
+    //         parameters, but 1 parameter
+    //         was supplied [E0061]
     let chunk = (n_usize + num_threads - 1) / num_threads;
 
     let x_addr = system.x.as_mut_ptr() as usize;
@@ -800,10 +810,10 @@ pub fn init_cluster(
                 let vy_ptr = vy_addr as *mut f32;
 
                 let mut seed = seed0;
-
-                // Simple 4-way unrolled loop to reduce per-iteration overhead (vectorization-friendly)
                 let mut i = 0usize;
+
                 while i + 4 <= len {
+                    // TODO: parallelize with SIMD
                     for k in 0..4 {
                         let s1 = splitmix64(seed);
                         seed = s1;
@@ -827,7 +837,7 @@ pub fn init_cluster(
                     i += 4;
                 }
 
-                // Remainder
+                // TODO: parallelize remaining with SIMD
                 for j in i..len {
                     let s1 = splitmix64(seed);
                     seed = s1;
@@ -897,9 +907,11 @@ impl SimulationData {
         let (x_edges, y_edges) = histogram_edges(config.a, config.b, config.res, HISTOGRAM_FACTOR);
 
         let out_px = compute_out_px(config.dpi);
-        let sample_n = (config.res as usize).max(3);
+        let sample_n = (config.res as usize).max(3); // error: This function takes 0 parameters, but 1
+        //        parameter was supplied [E0061]
         let boundary_pixels =
             Arc::new(precompute_boundary_pixels(&bx, &by, &x_edges, &y_edges, out_px, sample_n));
+        // error: Several type mismatches found [E0308]
 
         let pixel_bin_map = Arc::new(precompute_pixel_bin_map(out_px, config.res as usize));
         let thickness_offsets = Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
@@ -956,11 +968,8 @@ pub fn run_frame_generation(
     fps: u64,
 ) -> Result<f64, Box<dyn Error>> {
     let (width, height) = compute_out_px(config.dpi);
-
     let start_time = Instant::now();
-
     let total_to_generate = if n_frames > start_frame { n_frames - start_frame } else { 0 };
-
     let pb = ProgressBar::new(total_to_generate);
 
     pb.set_style(
@@ -977,10 +986,10 @@ pub fn run_frame_generation(
     let mut histogram_buf = vec![0f32; total_bins];
     let mut h_log_flat = vec![0f32; total_bins];
 
-    // Consolidate ffmpeg args into a vector to avoid repetitive `.arg(...)` calls
     let mut cmd = Command::new("ffmpeg");
     let mut args: Vec<String> = Vec::new();
 
+    // TODO: make a macro for this
     args.push("-y".to_string());
     args.push("-hide_banner".to_string());
     args.push("-loglevel".to_string());
@@ -1086,7 +1095,6 @@ pub fn run_frame_generation(
 
     let stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
     let reader = BufReader::new(stdout);
-
     let spinner = ProgressBar::new_spinner();
 
     spinner
@@ -1175,9 +1183,7 @@ pub fn generate_video(
     let mut child = cmd.spawn()?;
 
     let stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
-
     let reader = BufReader::new(stdout);
-
     let spinner = ProgressBar::new_spinner();
 
     spinner
@@ -1199,7 +1205,8 @@ pub fn generate_video(
 
         let (msg, is_end) = build_progress_msg(&kv_map);
         if msg != last_msg {
-            spinner.set_message(msg.clone());
+            spinner.set_message(msg.clone()); // error: Method `clone` not found in the current
+            //        scope for type `String` [E0599]
             last_msg = msg;
         }
 
@@ -1345,14 +1352,12 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
         if path.extension().map_or(false, |ext| ext == "mp4") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 if let Ok(mut set) = used_indices.lock() {
-                    // deduplicate the logic by using try_insert_numeric
                     try_insert_numeric(stem, &mut set);
                 }
             }
         } else if path.is_dir() {
             if let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) {
                 if let Ok(mut set) = used_indices.lock() {
-                    // deduplicate the logic by using try_insert_numeric
                     try_insert_numeric(dir_name, &mut set);
                 }
             }
@@ -1378,7 +1383,8 @@ pub fn choose_video_index() -> Result<u64, Box<dyn Error>> {
     let mut input = String::new();
     stdin().read_line(&mut input)?;
 
-    let input = input.trim();
+    let input = input.trim(); // error: Method `trim` not found in the current scope for type
+    //        `String` [E0599]
 
     if input.is_empty() {
         let index = next_available_index()?;
@@ -1516,18 +1522,17 @@ fn render(
 
     let mut img = RgbImage::new(width, height);
 
-    // precompute scale based on per-frame max to avoid per-pixel repeated work
     let palette_len = palette.len();
     let max_v = h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
-    // avoid divide by zero; small epsilon and mild boost to keep colors varied
     let scale =
         if max_v > 0.0 { (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32) } else { 1.0 };
 
-    // copy palette reference for faster indexing
     let palette_ref: &[[u8; 3]] = &palette;
 
     pool.install(|| {
         img.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
+            // error: Method `par_chunks_mut` not found in the current scope for type
+            //        `ImageBuffer<Rgb<u8>, Vec<u8>>` [E0599]
             let base_idx = y * w;
             for (x, pixel) in row.chunks_mut(3).enumerate() {
                 let idx = base_idx + x;
@@ -1546,6 +1551,7 @@ fn render(
                 }
                 let v = h_log_flat[bin].max(0.0);
                 let pi = ((v.sqrt() * scale) as usize).min(palette_len - 1);
+                // error: This function takes 0 parameters, but 1 parameter was supplied [E0061]
                 let col = palette_ref[pi];
                 pixel[0] = col[0];
                 pixel[1] = col[1];
@@ -1555,13 +1561,13 @@ fn render(
     });
 
     draw_boundary(
-        &mut img,
-        &boundary_pixels.as_ref(),
+        &mut img,                  // error: Value used after being moved [E0382]
+        &boundary_pixels.as_ref(), // error: Method `as_ref` is private [E0624]
         width,
         height,
-        &thickness_offsets.as_ref(),
+        &thickness_offsets.as_ref(), // error: Method `as_ref` is private [E0624]
         pool,
     );
 
-    img
+    img // error: Value used after being moved [E0382]
 }
