@@ -1024,7 +1024,6 @@ pub fn run_frame_generation(
                 config.m_exp,
             );
 
-            // compute histogram directly into the preallocated buffer to avoid allocations/copies
             compute_histogram_inplace(
                 &sim_data.system,
                 &sim_data.x_edges,
@@ -1048,7 +1047,6 @@ pub fn run_frame_generation(
                 &sim_data.thickness_offsets,
             );
 
-            // single send with simple error handling
             if tx.send(frame_image).is_err() {
                 return Err("ffmpeg writer channel send failed".into());
             }
@@ -1544,7 +1542,6 @@ pub fn compute_histogram_inplace(
             )
     });
 
-    // write into out buffer (resize/assure length externally)
     for (i, &c) in combined.iter().enumerate().take(total_bins) {
         out[i] = c as f32;
     }
