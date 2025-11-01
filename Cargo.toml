@@ -14,7 +14,7 @@ num_cpus = { version = "1.17.0" }
 rayon = { version = "1.11.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0" }
-mimalloc = "0.1.48"
+mimalloc = { version = "0.1.48"}
 
 [profile.release]
 opt-level = 3                # maximize LLVM optimizations for runtime speed
