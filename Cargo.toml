@@ -13,7 +13,7 @@ indicatif = { version = "0.18.2" }
 num_cpus = { version = "1.17.0" }
 rayon = { version = "1.11.0" }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = { version = "1.0" }
+serde_json = { version = "1.0.145" }
 mimalloc = "0.1.48"
 
 [profile.release]

@@ -1,4 +1,22 @@
-use ahash::{AHashMap, AHashSet}; // I have no idea why it says "unused import" for AHashSet, but it refuses to compile without it
+use std::{
+    cmp,
+    error::Error,
+    f32::consts::PI,
+    fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
+    io::{BufRead, BufReader, Write, stdin},
+    path::{Path, PathBuf},
+    process::{
+        Command, Stdio, {self},
+    },
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+use ahash::{AHashMap, AHashSet};
 use chrono::Utc;
 use clap::Parser;
 use cmp::max;
@@ -11,34 +29,21 @@ use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{
     Map,
-    Value::{self, Null, Object},
-    from_str, json, to_string_pretty,
-};
-use std::{
-    cmp,
-    error::Error,
-    f32::consts::PI,
-    fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
-    io::{BufRead, BufReader, Write, stdin},
-    path::{Path, PathBuf},
-    process::{self, Command, Stdio},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
+    Value::{
+        Null, Object, {self},
     },
-    thread,
-    time::{Duration, Instant},
+    from_str, json, to_string_pretty,
 };
 use thread::scope;
 
 #[global_allocator]
-static GLOBAL_ALLOC: MiMalloc = MiMalloc; // Do not change this line
+static GLOBAL_ALLOC: MiMalloc = MiMalloc; /* Do not change this line */
 
 const A: f32 = 1.0;
 const B: f32 = 1.0;
 const N_EXP: f32 = 2.0;
 const M_EXP: f32 = 2.0;
-const DT: f32 = 0.0001; // change back to 0.001
+const DT: f32 = 0.0001; /* change back to 0.001 */
 const EPSILON: f32 = 1e-8;
 const CEN_X: f32 = 0.1;
 const CEN_Y: f32 = -0.1;
@@ -48,7 +53,7 @@ const VY0: f32 = 0.0;
 const N_PARTICLES: u64 = 1000;
 const FPS: u64 = 60;
 const DURATION_S: u64 = 10;
-const STEPS_PER_FRAME: u64 = 300; // change back to 30
+const STEPS_PER_FRAME: u64 = 300; /* change back to 30 */
 const RES: u32 = 932;
 const DPI: u32 = 300;
 const HISTOGRAM_FACTOR: f32 = 1.25;
@@ -163,7 +168,11 @@ impl Vec3 {
     }
 
     pub fn from_rgb_u8(c: Vector3D<u8>) -> Self {
-        Self { x: c[0] as f32 / 255.0, y: c[1] as f32 / 255.0, z: c[2] as f32 / 255.0 }
+        Self {
+            x: c[0] as f32 / 255.0,
+            y: c[1] as f32 / 255.0,
+            z: c[2] as f32 / 255.0,
+        }
     }
 
     pub fn to_rgb_u8(self) -> Vector3D<u8> {
@@ -175,7 +184,11 @@ impl Vec3 {
     }
 
     pub fn clamp01(self) -> Self {
-        Self { x: self.x.clamp(0.0, 1.0), y: self.y.clamp(0.0, 1.0), z: self.z.clamp(0.0, 1.0) }
+        Self {
+            x: self.x.clamp(0.0, 1.0),
+            y: self.y.clamp(0.0, 1.0),
+            z: self.z.clamp(0.0, 1.0),
+        }
     }
 }
 
@@ -209,8 +222,9 @@ fn rgb_from_wavelength(wl: f32, gamma: f32) -> Vec3 {
         1.0
     };
 
-    let apply_gamma =
-        |c: f32| -> f32 { if c <= 0.0 { 0.0 } else { c.powf(gamma).clamp(0.0, 1.0) } };
+    let apply_gamma = |c: f32| -> f32 {
+        if c <= 0.0 { 0.0 } else { c.powf(gamma).clamp(0.0, 1.0) }
+    };
 
     Vec3::new(apply_gamma(r * s), apply_gamma(g * s), apply_gamma(b * s))
 }
@@ -255,7 +269,12 @@ pub fn shape_boundary(
     (x, y)
 }
 
-pub fn histogram_edges(a: f32, b: f32, bins: u32, factor: f32) -> (Vec<f32>, Vec<f32>) {
+pub fn histogram_edges(
+    a: f32,
+    b: f32,
+    bins: u32,
+    factor: f32,
+) -> (Vec<f32>, Vec<f32>) {
     let x_min = -a * factor;
     let x_max = a * factor;
     let y_min = -b * factor;
@@ -265,9 +284,11 @@ pub fn histogram_edges(a: f32, b: f32, bins: u32, factor: f32) -> (Vec<f32>, Vec
     let x_step = (x_max - x_min) / bins as f32;
     let y_step = (y_max - y_min) / bins as f32;
 
-    let x_edges: Vec<f32> = (0..=bins).into_par_iter().map(|i| x_min + x_step * i as f32).collect();
+    let x_edges: Vec<f32> =
+        (0..=bins).into_par_iter().map(|i| x_min + x_step * i as f32).collect();
 
-    let y_edges: Vec<f32> = (0..=bins).into_par_iter().map(|i| y_min + y_step * i as f32).collect();
+    let y_edges: Vec<f32> =
+        (0..=bins).into_par_iter().map(|i| y_min + y_step * i as f32).collect();
 
     (x_edges, y_edges)
 }
@@ -304,14 +325,20 @@ fn precompute_thickness_offsets(thickness: usize) -> Vec<(i64, i64)> {
             let remainder = radius_sq - dy * dy;
             if remainder >= 0 {
                 let dx_limit = (remainder as f64).sqrt() as i64;
-                (-dx_limit..=dx_limit).into_par_iter().map(move |dx| (dx, dy)).collect()
+                (-dx_limit..=dx_limit)
+                    .into_par_iter()
+                    .map(move |dx| (dx, dy))
+                    .collect()
             } else {
                 Vec::new()
             }
         })
         .collect();
 
-    per_row_offsets.into_par_iter().flat_map(|row| row.into_par_iter()).collect()
+    per_row_offsets
+        .into_par_iter()
+        .flat_map(|row| row.into_par_iter())
+        .collect()
 }
 
 pub fn compute_histogram(
@@ -347,7 +374,9 @@ pub fn compute_histogram(
                     let ix = ((px - x_min) * dx_inv) as i32;
                     let iy = ((py - y_min) * dy_inv) as i32;
 
-                    if ix >= 0 && ix < bins as i32 && iy >= 0 && iy < bins as i32 {
+                    let bins = bins as i32;
+
+                    if ix >= 0 && ix < bins && iy >= 0 && iy < bins {
                         let id = (iy as usize) * bins_usize + (ix as usize);
                         local[id] = local[id].wrapping_add(1);
                     }
@@ -368,7 +397,12 @@ pub fn compute_histogram(
     combined.into_iter().map(|c| c as f32).collect()
 }
 
-fn bresenham_points(mut x0: i64, mut y0: i64, x1: i64, y1: i64) -> Vec<(i64, i64)> {
+fn bresenham_points(
+    mut x0: i64,
+    mut y0: i64,
+    x1: i64,
+    y1: i64,
+) -> Vec<(i64, i64)> {
     let delta_x = (x1 - x0).abs();
     let step_x = if x0 < x1 { 1 } else { -1 };
     let delta_y_neg = -(y1 - y0).abs();
@@ -382,16 +416,20 @@ fn bresenham_points(mut x0: i64, mut y0: i64, x1: i64, y1: i64) -> Vec<(i64, i64
         if x0 == x1 && y0 == y1 {
             break;
         }
+
         let doubled_err = 2 * err;
+
         if doubled_err >= delta_y_neg {
             err += delta_y_neg;
             x0 += step_x;
         }
+
         if doubled_err <= delta_x {
             err += delta_x;
             y0 += step_y;
         }
     }
+
     points
 }
 
@@ -405,35 +443,47 @@ fn precompute_boundary_pixels(
 ) -> Vec<(i64, i64)> {
     let (width_px, height_px) = out_px;
     let sample_bins = sample_n.max(3);
-    let x_span = (x_edges.last().cloned().unwrap_or(0.0) - x_edges[0]).abs().max(1e-6);
-    let y_span = (y_edges.last().cloned().unwrap_or(0.0) - y_edges[0]).abs().max(1e-6);
+
+    let x_span =
+        (x_edges.last().cloned().unwrap_or(0.0) - x_edges[0]).abs().max(1e-6);
+
+    let y_span =
+        (y_edges.last().cloned().unwrap_or(0.0) - y_edges[0]).abs().max(1e-6);
 
     let boundary_len = bx.len().max(1);
 
     let sampled_pixels: Vec<(i64, i64)> = (0..sample_bins)
         .into_par_iter()
         .map(|k| {
-            let idxf = (k as f32) * (boundary_len as f32) / (sample_bins as f32);
+            let idxf =
+                (k as f32) * (boundary_len as f32) / (sample_bins as f32);
+
             let i0 = idxf.floor() as usize % boundary_len;
             let i1 = (i0 + 1) % boundary_len;
             let frac = idxf - idxf.floor();
             let bx_val = bx[i0] * (1.0 - frac) + bx[i1] * frac;
             let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
 
-            let mut x = ((bx_val - x_edges[0]) / x_span * (width_px - 1) as f32).round() as i64;
+            let mut x = ((bx_val - x_edges[0]) / x_span * (width_px - 1) as f32)
+                .round() as i64;
+
             let mut y = height_px as i64
                 - 1
-                - ((by_val - y_edges[0]) / y_span * (height_px - 1) as f32).round() as i64;
+                - ((by_val - y_edges[0]) / y_span * (height_px - 1) as f32)
+                    .round() as i64;
 
             if x < 0 {
                 x = 0
             }
+
             if y < 0 {
                 y = 0
             }
+
             if x >= width_px as i64 {
                 x = (width_px - 1) as i64
             }
+
             if y >= height_px as i64 {
                 y = (height_px - 1) as i64
             }
@@ -443,6 +493,7 @@ fn precompute_boundary_pixels(
         .collect();
 
     let n = sampled_pixels.len();
+
     let mut all_points: Vec<(i64, i64)> = (0..n)
         .into_par_iter()
         .flat_map_iter(|i| {
@@ -473,7 +524,10 @@ fn draw_boundary(
     let w = width as usize;
     let h = height as usize;
     let total = w.saturating_mul(h);
-    let pixel_flags: Vec<AtomicU32> = (0..total).map(|_| AtomicU32::new(0)).collect();
+
+    let pixel_flags: Vec<AtomicU32> =
+        (0..total).map(|_| AtomicU32::new(0)).collect();
+
     let pixel_flags = Arc::new(pixel_flags);
 
     pool.install(|| {
@@ -482,47 +536,54 @@ fn draw_boundary(
             offsets.iter().for_each(|&(dx, dy)| {
                 let px = lx + dx;
                 let py = ly + dy;
+
                 if px < 0 || py < 0 {
                     return;
                 }
+
                 let pxu = px as usize;
                 let pyu = py as usize;
+
                 if pxu >= w || pyu >= h {
                     return;
                 }
+
                 let idx = pyu * w + pxu;
                 pixel_flags[idx].store(1, Relaxed);
             });
         });
 
-        image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
-            let base_row_idx = y * w;
+        image.par_chunks_mut((width * 3) as usize).enumerate().for_each(
+            |(y, row)| {
+                let base_row_idx = y * w;
 
-            for (x, pixel) in row.chunks_mut(3).enumerate() {
-                let idx = base_row_idx + x;
-                if pixel_flags[idx].load(Relaxed) != 0 {
-                    if pixel.len() >= 3 {
-                        pixel[0] = 255;
-                        pixel[1] = 255;
-                        pixel[2] = 255;
+                for (x, pixel) in row.chunks_mut(3).enumerate() {
+                    let idx = base_row_idx + x;
+
+                    if pixel_flags[idx].load(Relaxed) != 0 {
+                        if pixel.len() >= 3 {
+                            pixel[0] = 255;
+                            pixel[1] = 255;
+                            pixel[2] = 255;
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
     });
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Particle {
-    pub x: f32,
-    pub y: f32,
+    pub x:  f32,
+    pub y:  f32,
     pub vx: f32,
     pub vy: f32,
 }
 
 pub struct ParticleSystem {
-    pub x: Vec<f32>,
-    pub y: Vec<f32>,
+    pub x:  Vec<f32>,
+    pub y:  Vec<f32>,
     pub vx: Vec<f32>,
     pub vy: Vec<f32>,
 }
@@ -540,8 +601,8 @@ impl ParticleSystem {
 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            x: Vec::with_capacity(capacity),
-            y: Vec::with_capacity(capacity),
+            x:  Vec::with_capacity(capacity),
+            y:  Vec::with_capacity(capacity),
             vx: Vec::with_capacity(capacity),
             vy: Vec::with_capacity(capacity),
         }
@@ -606,6 +667,7 @@ pub fn step_simd(
     let mut i = 0usize;
     while i < n {
         let remaining = n - i;
+
         if remaining >= LANES {
             let mut pos_x_lane = [0.0f32; LANES];
             let mut pos_y_lane = [0.0f32; LANES];
@@ -656,6 +718,7 @@ pub fn step_simd(
                 let vx = vel_x_lane[j];
                 let vy = vel_y_lane[j];
                 let vxn = vx * nx + vy * ny;
+
                 let rx = vx - 2.0 * vxn * nx;
                 let ry = vy - 2.0 * vxn * ny;
 
@@ -776,9 +839,11 @@ pub fn init_cluster(
     scope(|s| {
         for t in 0..num_threads {
             let start = t * chunk;
+
             if start >= n_usize {
                 break;
             }
+
             let end = (start + chunk).min(n_usize);
             let len = end - start;
             let seed0 = SEED_MULTIPLIER ^ (start as u64);
@@ -791,7 +856,6 @@ pub fn init_cluster(
 
                 let mut seed = seed0;
 
-                // keep the original unrolling pattern for performance, but clearer names
                 let mut i = 0usize;
                 while i + 4 <= len {
                     for k in 0..4 {
@@ -845,16 +909,16 @@ pub fn init_cluster(
 }
 
 pub struct SimulationData {
-    pub palette: Arc<Vec<[u8; 3]>>,
-    pub bx: Arc<Vec<f32>>,
-    pub by: Arc<Vec<f32>>,
-    pub system: ParticleSystem,
-    pub x_edges: Arc<Vec<f32>>,
-    pub y_edges: Arc<Vec<f32>>,
-    pub sim_pool: Arc<ThreadPool>,
-    pub render_pool: Arc<ThreadPool>,
-    pub boundary_pixels: Arc<Vec<(i64, i64)>>,
-    pub pixel_bin_map: Arc<Vec<usize>>,
+    pub palette:           Arc<Vec<[u8; 3]>>,
+    pub bx:                Arc<Vec<f32>>,
+    pub by:                Arc<Vec<f32>>,
+    pub system:            ParticleSystem,
+    pub x_edges:           Arc<Vec<f32>>,
+    pub y_edges:           Arc<Vec<f32>>,
+    pub sim_pool:          Arc<ThreadPool>,
+    pub render_pool:       Arc<ThreadPool>,
+    pub boundary_pixels:   Arc<Vec<(i64, i64)>>,
+    pub pixel_bin_map:     Arc<Vec<usize>>,
     pub thickness_offsets: Arc<Vec<(i64, i64)>>,
 }
 
@@ -862,7 +926,8 @@ impl SimulationData {
     pub fn new(config: &Config, start_frame: u64) -> Self {
         let default_cpus = num_cpus::get();
         let sim_threads = config.sim_threads.unwrap_or(default_cpus);
-        let render_threads = config.render_threads.unwrap_or(max(1, default_cpus / 2));
+        let render_threads =
+            config.render_threads.unwrap_or(max(1, default_cpus / 2));
 
         let sim_pool = Arc::new(
             ThreadPoolBuilder::new()
@@ -880,18 +945,27 @@ impl SimulationData {
 
         let palette = Arc::new(build_palette());
 
-        let (bx, by) =
-            shape_boundary(config.a, config.b, config.n_exp, config.m_exp, SHAPE_SAMPLE_POINTS);
+        let (bx, by) = shape_boundary(
+            config.a,
+            config.b,
+            config.n_exp,
+            config.m_exp,
+            SHAPE_SAMPLE_POINTS,
+        );
 
-        let (x_edges, y_edges) = histogram_edges(config.a, config.b, config.res, HISTOGRAM_FACTOR);
+        let (x_edges, y_edges) =
+            histogram_edges(config.a, config.b, config.res, HISTOGRAM_FACTOR);
 
         let out_px = compute_out_px(config.dpi);
         let sample_n = (config.res as usize).max(3);
-        let boundary_pixels =
-            Arc::new(precompute_boundary_pixels(&bx, &by, &x_edges, &y_edges, out_px, sample_n));
+        let boundary_pixels = Arc::new(precompute_boundary_pixels(
+            &bx, &by, &x_edges, &y_edges, out_px, sample_n,
+        ));
 
-        let pixel_bin_map = Arc::new(precompute_pixel_bin_map(out_px, config.res as usize));
-        let thickness_offsets = Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
+        let pixel_bin_map =
+            Arc::new(precompute_pixel_bin_map(out_px, config.res as usize));
+        let thickness_offsets =
+            Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
 
         let mut system = init_cluster(
             config.n_particles,
@@ -948,7 +1022,8 @@ pub fn run_frame_generation(
 
     let start_time = Instant::now();
 
-    let total_to_generate = if n_frames > start_frame { n_frames - start_frame } else { 0 };
+    let total_to_generate =
+        if n_frames > start_frame { n_frames - start_frame } else { 0 };
 
     let pb = ProgressBar::new(total_to_generate);
 
@@ -1001,10 +1076,14 @@ pub fn run_frame_generation(
     args.push("pipe:1".to_string());
     args.push(output_path.to_string());
 
-    cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
 
     let mut child = cmd.spawn()?;
-    let child_stdin = child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
+    let child_stdin =
+        child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
 
     let (tx, rx) = bounded::<RgbImage>(12);
 
@@ -1043,9 +1122,11 @@ pub fn run_frame_generation(
 
             histogram_buf.copy_from_slice(&hist);
 
-            h_log_flat.par_iter_mut().zip(&histogram_buf).for_each(|(h, &v)| {
-                *h = v + config.epsilon;
-            });
+            h_log_flat.par_iter_mut().zip(&histogram_buf).for_each(
+                |(h, &v)| {
+                    *h = v + config.epsilon;
+                },
+            );
 
             let frame_image = render(
                 &h_log_flat,
@@ -1072,13 +1153,17 @@ pub fn run_frame_generation(
         Ok(())
     })?;
 
-    let stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
+    let stdout =
+        child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
     let reader = BufReader::new(stdout);
 
     let spinner = ProgressBar::new_spinner();
 
-    spinner
-        .set_style(ProgressStyle::default_spinner().template("{prefix} {spinner} {msg}").unwrap());
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{prefix} {spinner} {msg}")
+            .unwrap(),
+    );
 
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
@@ -1129,7 +1214,8 @@ pub fn generate_video(
     fps: u64,
     total_frames: u64,
 ) -> Result<(), Box<dyn Error>> {
-    let frames_pattern = frames_dir.join("%d.png").to_string_lossy().to_string();
+    let frames_pattern =
+        frames_dir.join("%d.png").to_string_lossy().to_string();
 
     let mut cmd = Command::new("ffmpeg");
     cmd.arg("-y")
@@ -1162,14 +1248,18 @@ pub fn generate_video(
 
     let mut child = cmd.spawn()?;
 
-    let stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
+    let stdout =
+        child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
 
     let reader = BufReader::new(stdout);
 
     let spinner = ProgressBar::new_spinner();
 
-    spinner
-        .set_style(ProgressStyle::default_spinner().template("{prefix} {spinner} {msg}").unwrap());
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{prefix} {spinner} {msg}")
+            .unwrap(),
+    );
 
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
@@ -1270,7 +1360,10 @@ fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
         if let Some(eq_pos) = part.find('=') {
             let key = part[..eq_pos].trim().to_string();
             let mut val = part[eq_pos + 1..].trim();
-            if val.is_empty() && (i + 1) < parts.len() && !parts[i + 1].contains('=') {
+            if val.is_empty()
+                && (i + 1) < parts.len()
+                && !parts[i + 1].contains('=')
+            {
                 i += 1;
                 val = parts[i].trim();
             }
@@ -1285,7 +1378,8 @@ fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
 fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
     let mut parts_msg = Vec::new();
 
-    if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) {
+    if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size"))
+    {
         if let Some(bytes) = size_to_bytes(size) {
             parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6));
         }
@@ -1299,12 +1393,15 @@ fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
         parts_msg.push(format!("speed:{}", speed.trim()));
     }
 
-    if let Some(out_time) = kv_map.get("progress").or_else(|| kv_map.get("time")) {
+    if let Some(out_time) =
+        kv_map.get("progress").or_else(|| kv_map.get("time"))
+    {
         parts_msg.push(format!("time:{}", out_time.trim()));
     }
 
     let msg = parts_msg.join(" | ");
-    let is_end = kv_map.get("progress").map(|p| p.trim() == "end").unwrap_or(false);
+    let is_end =
+        kv_map.get("progress").map(|p| p.trim() == "end").unwrap_or(false);
     (msg, is_end)
 }
 
@@ -1324,8 +1421,10 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
         return Ok(1);
     }
 
-    let paths: Vec<PathBuf> =
-        read_dir(mp4_dir)?.filter_map(Result::ok).map(|entry| entry.path()).collect();
+    let paths: Vec<PathBuf> = read_dir(mp4_dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
 
     let used_indices = Arc::new(Mutex::new(AHashSet::new()));
 
@@ -1346,7 +1445,9 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
     });
 
     let used_snapshot = {
-        let guard = used_indices.lock().map_err(|e| format!("Mutex poisoned: {}", e))?;
+        let guard = used_indices
+            .lock()
+            .map_err(|e| format!("Mutex poisoned: {}", e))?;
         guard.clone()
     };
 
@@ -1399,15 +1500,16 @@ pub fn prepare_video_dirs_and_meta(
         Object(meta)
     };
 
-    let start_frame = meta.get("last_frame").and_then(Value::as_u64).unwrap_or(0);
+    let start_frame =
+        meta.get("last_frame").and_then(Value::as_u64).unwrap_or(0);
 
     Ok(VideoDirs { video_dir, frames_dir, meta, start_frame })
 }
 
 pub struct VideoDirs {
-    pub video_dir: PathBuf,
-    pub frames_dir: PathBuf,
-    pub meta: Value,
+    pub video_dir:   PathBuf,
+    pub frames_dir:  PathBuf,
+    pub meta:        Value,
     pub start_frame: u64,
 }
 
@@ -1428,7 +1530,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let entries: Vec<DirEntry> = read_dir(&dirs.frames_dir)?.collect::<Result<Vec<_>, _>>()?;
+    let entries: Vec<DirEntry> =
+        read_dir(&dirs.frames_dir)?.collect::<Result<Vec<_>, _>>()?;
 
     let (frame_count_res, total_size_bytes_res) = entries
         .par_iter()
@@ -1447,15 +1550,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Frames saved: {}", frame_count_res);
     println!("Date: {}", dirs.meta.get("date").unwrap_or(&Null));
-    println!("Total compute time: {}s", dirs.meta.get("compute_time").unwrap_or(&Value::from(0.0)));
-    println!("Video dir size: {:.2} MB", total_size_bytes_res as f64 / 1_000_000.0);
+    println!(
+        "Total compute time: {}s",
+        dirs.meta.get("compute_time").unwrap_or(&Value::from(0.0))
+    );
+    println!(
+        "Video dir size: {:.2} MB",
+        total_size_bytes_res as f64 / 1_000_000.0
+    );
     println!("Continue generating frames? (y/n): ");
 
     let mut response = String::new();
     stdin().read_line(&mut response)?;
 
     if response.trim().to_lowercase() != "y" {
-        println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
+        println!(
+            "Total elapsed time: {:.2}s",
+            program_start.elapsed().as_secs_f64()
+        );
         return Ok(());
     }
 
@@ -1475,7 +1587,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     let total_compute_time =
-        dirs.meta.get("compute_time").and_then(|v| v.as_f64()).unwrap_or(0.0) + compute_time;
+        dirs.meta.get("compute_time").and_then(|v| v.as_f64()).unwrap_or(0.0)
+            + compute_time;
 
     let mut updated_meta = dirs.meta.clone();
     updated_meta["compute_time"] = Value::from(total_compute_time);
@@ -1483,7 +1596,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
 
     println!("Video saved to `mp4/{}`", index);
-    println!("Total elapsed time: {:.2}s", program_start.elapsed().as_secs_f64());
+    println!(
+        "Total elapsed time: {:.2}s",
+        program_start.elapsed().as_secs_f64()
+    );
 
     Ok(())
 }
@@ -1503,38 +1619,44 @@ fn render(
     let mut img = RgbImage::new(width, height);
 
     let palette_len = palette.len();
-    let max_v = h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
-    let scale =
-        if max_v > 0.0 { (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32) } else { 1.0 };
+    let max_v =
+        h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
+    let scale = if max_v > 0.0 {
+        (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32)
+    } else {
+        1.0
+    };
 
     let palette_ref: &[[u8; 3]] = &palette;
 
     pool.install(|| {
-        img.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
-            let base_idx = y * w;
-            for (x, pixel) in row.chunks_mut(3).enumerate() {
-                let idx = base_idx + x;
-                if idx >= pixel_bin_map.len() {
-                    pixel[0] = 0;
-                    pixel[1] = 0;
-                    pixel[2] = 0;
-                    continue;
+        img.par_chunks_mut((width * 3) as usize).enumerate().for_each(
+            |(y, row)| {
+                let base_idx = y * w;
+                for (x, pixel) in row.chunks_mut(3).enumerate() {
+                    let idx = base_idx + x;
+                    if idx >= pixel_bin_map.len() {
+                        pixel[0] = 0;
+                        pixel[1] = 0;
+                        pixel[2] = 0;
+                        continue;
+                    }
+                    let bin = pixel_bin_map[idx];
+                    if bin >= h_log_flat.len() {
+                        pixel[0] = 0;
+                        pixel[1] = 0;
+                        pixel[2] = 0;
+                        continue;
+                    }
+                    let v = h_log_flat[bin].max(0.0);
+                    let pi = ((v.sqrt() * scale) as usize).min(palette_len - 1);
+                    let col = palette_ref[pi];
+                    pixel[0] = col[0];
+                    pixel[1] = col[1];
+                    pixel[2] = col[2];
                 }
-                let bin = pixel_bin_map[idx];
-                if bin >= h_log_flat.len() {
-                    pixel[0] = 0;
-                    pixel[1] = 0;
-                    pixel[2] = 0;
-                    continue;
-                }
-                let v = h_log_flat[bin].max(0.0);
-                let pi = ((v.sqrt() * scale) as usize).min(palette_len - 1);
-                let col = palette_ref[pi];
-                pixel[0] = col[0];
-                pixel[1] = col[1];
-                pixel[2] = col[2];
-            }
-        });
+            },
+        );
     });
 
     draw_boundary(
