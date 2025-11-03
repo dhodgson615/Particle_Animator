@@ -32,7 +32,7 @@ use std::{
 use thread::scope;
 
 #[global_allocator]
-static GLOBAL_ALLOC: MiMalloc = MiMalloc;
+static GLOBAL_ALLOC: MiMalloc = MiMalloc; // Do not change this line
 
 const A: f32 = 1.0;
 const B: f32 = 1.0;
@@ -273,16 +273,16 @@ pub fn histogram_edges(a: f32, b: f32, bins: u32, factor: f32) -> (Vec<f32>, Vec
 }
 
 fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
-    let (width, height) = out_px;
-    let w = width as usize;
-    let h = height as usize;
-    let total = w.saturating_mul(h);
+    let (width_px, height_px) = out_px;
+    let w = width_px as usize;
+    let h = height_px as usize;
+    let total_pixels = w.saturating_mul(h);
 
-    if total == 0 || bins == 0 {
+    if total_pixels == 0 || bins == 0 {
         return Vec::new();
     }
 
-    (0..total)
+    (0..total_pixels)
         .into_par_iter()
         .map(|i| {
             let y = i / w;
@@ -295,23 +295,23 @@ fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
 }
 
 fn precompute_thickness_offsets(thickness: usize) -> Vec<(i64, i64)> {
-    let r = thickness as i64;
-    let rr = r * r;
+    let radius = thickness as i64;
+    let radius_sq = radius * radius;
 
-    let per_rows: Vec<Vec<(i64, i64)>> = (-r..=r)
+    let per_row_offsets: Vec<Vec<(i64, i64)>> = (-radius..=radius)
         .into_par_iter()
         .map(|dy| {
-            let rem = rr - dy * dy;
-            if rem >= 0 {
-                let dx_lim = (rem as f64).sqrt() as i64;
-                (-dx_lim..=dx_lim).into_par_iter().map(move |dx| (dx, dy)).collect()
+            let remainder = radius_sq - dy * dy;
+            if remainder >= 0 {
+                let dx_limit = (remainder as f64).sqrt() as i64;
+                (-dx_limit..=dx_limit).into_par_iter().map(move |dx| (dx, dy)).collect()
             } else {
                 Vec::new()
             }
         })
         .collect();
 
-    per_rows.into_par_iter().flat_map(|row| row.into_par_iter()).collect()
+    per_row_offsets.into_par_iter().flat_map(|row| row.into_par_iter()).collect()
 }
 
 pub fn compute_histogram(
@@ -369,30 +369,30 @@ pub fn compute_histogram(
 }
 
 fn bresenham_points(mut x0: i64, mut y0: i64, x1: i64, y1: i64) -> Vec<(i64, i64)> {
-    let dx = (x1 - x0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let dy = -(y1 - y0).abs();
-    let sy = if y0 < y1 { 1 } else { -1 };
+    let delta_x = (x1 - x0).abs();
+    let step_x = if x0 < x1 { 1 } else { -1 };
+    let delta_y_neg = -(y1 - y0).abs();
+    let step_y = if y0 < y1 { 1 } else { -1 };
 
-    let mut err = dx + dy;
-    let mut pts = Vec::new();
+    let mut err = delta_x + delta_y_neg;
+    let mut points = Vec::new();
 
     loop {
-        pts.push((x0, y0));
+        points.push((x0, y0));
         if x0 == x1 && y0 == y1 {
             break;
         }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x0 += sx;
+        let doubled_err = 2 * err;
+        if doubled_err >= delta_y_neg {
+            err += delta_y_neg;
+            x0 += step_x;
         }
-        if e2 <= dx {
-            err += dx;
-            y0 += sy;
+        if doubled_err <= delta_x {
+            err += delta_x;
+            y0 += step_y;
         }
     }
-    pts
+    points
 }
 
 fn precompute_boundary_pixels(
@@ -403,27 +403,27 @@ fn precompute_boundary_pixels(
     out_px: (u32, u32),
     sample_n: usize,
 ) -> Vec<(i64, i64)> {
-    let (width, height) = out_px;
-    let bins = sample_n.max(3);
+    let (width_px, height_px) = out_px;
+    let sample_bins = sample_n.max(3);
     let x_span = (x_edges.last().cloned().unwrap_or(0.0) - x_edges[0]).abs().max(1e-6);
     let y_span = (y_edges.last().cloned().unwrap_or(0.0) - y_edges[0]).abs().max(1e-6);
 
-    let orig_n = bx.len().max(1);
+    let boundary_len = bx.len().max(1);
 
-    let sampled_pts: Vec<(i64, i64)> = (0..bins)
+    let sampled_pixels: Vec<(i64, i64)> = (0..sample_bins)
         .into_par_iter()
         .map(|k| {
-            let idxf = (k as f32) * (orig_n as f32) / (bins as f32);
-            let i0 = idxf.floor() as usize % orig_n;
-            let i1 = (i0 + 1) % orig_n;
+            let idxf = (k as f32) * (boundary_len as f32) / (sample_bins as f32);
+            let i0 = idxf.floor() as usize % boundary_len;
+            let i1 = (i0 + 1) % boundary_len;
             let frac = idxf - idxf.floor();
             let bx_val = bx[i0] * (1.0 - frac) + bx[i1] * frac;
             let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
 
-            let mut x = ((bx_val - x_edges[0]) / x_span * (width - 1) as f32).round() as i64;
-            let mut y = height as i64
+            let mut x = ((bx_val - x_edges[0]) / x_span * (width_px - 1) as f32).round() as i64;
+            let mut y = height_px as i64
                 - 1
-                - ((by_val - y_edges[0]) / y_span * (height - 1) as f32).round() as i64;
+                - ((by_val - y_edges[0]) / y_span * (height_px - 1) as f32).round() as i64;
 
             if x < 0 {
                 x = 0
@@ -431,31 +431,31 @@ fn precompute_boundary_pixels(
             if y < 0 {
                 y = 0
             }
-            if x >= width as i64 {
-                x = (width - 1) as i64
+            if x >= width_px as i64 {
+                x = (width_px - 1) as i64
             }
-            if y >= height as i64 {
-                y = (height - 1) as i64
+            if y >= height_px as i64 {
+                y = (height_px - 1) as i64
             }
 
             (x, y)
         })
         .collect();
 
-    let n = sampled_pts.len();
-    let mut all_pts: Vec<(i64, i64)> = (0..n)
+    let n = sampled_pixels.len();
+    let mut all_points: Vec<(i64, i64)> = (0..n)
         .into_par_iter()
         .flat_map_iter(|i| {
-            let a = sampled_pts[i];
-            let b = sampled_pts[(i + 1) % n];
+            let a = sampled_pixels[i];
+            let b = sampled_pixels[(i + 1) % n];
             bresenham_points(a.0, a.1, b.0, b.1)
         })
         .collect();
 
-    all_pts.sort_unstable();
-    all_pts.dedup();
+    all_points.sort_unstable();
+    all_points.dedup();
 
-    all_pts
+    all_points
 }
 
 fn draw_boundary(
@@ -473,12 +473,12 @@ fn draw_boundary(
     let w = width as usize;
     let h = height as usize;
     let total = w.saturating_mul(h);
-    let atoms: Vec<AtomicU32> = (0..total).map(|_| AtomicU32::new(0)).collect();
-    let atoms = Arc::new(atoms);
+    let pixel_flags: Vec<AtomicU32> = (0..total).map(|_| AtomicU32::new(0)).collect();
+    let pixel_flags = Arc::new(pixel_flags);
 
     pool.install(|| {
         bresenham_px.par_iter().for_each(|&(lx, ly)| {
-            let atoms = atoms.clone();
+            let pixel_flags = pixel_flags.clone();
             offsets.iter().for_each(|&(dx, dy)| {
                 let px = lx + dx;
                 let py = ly + dy;
@@ -491,7 +491,7 @@ fn draw_boundary(
                     return;
                 }
                 let idx = pyu * w + pxu;
-                atoms[idx].store(1, Relaxed);
+                pixel_flags[idx].store(1, Relaxed);
             });
         });
 
@@ -500,7 +500,7 @@ fn draw_boundary(
 
             for (x, pixel) in row.chunks_mut(3).enumerate() {
                 let idx = base_row_idx + x;
-                if atoms[idx].load(Relaxed) != 0 {
+                if pixel_flags[idx].load(Relaxed) != 0 {
                     if pixel.len() >= 3 {
                         pixel[0] = 255;
                         pixel[1] = 255;
@@ -569,18 +569,18 @@ fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 1e-6
 }
 
-fn pow_fast(v: f32, e: f32) -> f32 {
-    if approx_eq(e, 1.0) {
-        v
-    } else if approx_eq(e, 2.0) {
-        v * v
-    } else if approx_eq(e, 3.0) {
-        v * v * v
-    } else if approx_eq(e, 4.0) {
-        let v2 = v * v;
-        v2 * v2
+fn pow_fast(value: f32, exponent: f32) -> f32 {
+    if approx_eq(exponent, 1.0) {
+        value
+    } else if approx_eq(exponent, 2.0) {
+        value * value
+    } else if approx_eq(exponent, 3.0) {
+        value * value * value
+    } else if approx_eq(exponent, 4.0) {
+        let sq = value * value;
+        sq * sq
     } else {
-        v.powf(e)
+        value.powf(exponent)
     }
 }
 
@@ -607,45 +607,45 @@ pub fn step_simd(
     while i < n {
         let remaining = n - i;
         if remaining >= LANES {
-            let mut ax = [0.0f32; LANES];
-            let mut ay = [0.0f32; LANES];
-            let mut avx = [0.0f32; LANES];
-            let mut avy = [0.0f32; LANES];
+            let mut pos_x_lane = [0.0f32; LANES];
+            let mut pos_y_lane = [0.0f32; LANES];
+            let mut vel_x_lane = [0.0f32; LANES];
+            let mut vel_y_lane = [0.0f32; LANES];
 
             for j in 0..LANES {
-                ax[j] = system.x[i + j];
-                ay[j] = system.y[i + j];
-                avx[j] = system.vx[i + j];
-                avy[j] = system.vy[i + j];
+                pos_x_lane[j] = system.x[i + j];
+                pos_y_lane[j] = system.y[i + j];
+                vel_x_lane[j] = system.vx[i + j];
+                vel_y_lane[j] = system.vy[i + j];
             }
 
             for j in 0..LANES {
-                let px = ax[j] + avx[j] * dt;
-                let py = ay[j] + avy[j] * dt;
+                let pred_x = pos_x_lane[j] + vel_x_lane[j] * dt;
+                let pred_y = pos_y_lane[j] + vel_y_lane[j] * dt;
 
-                let xna = px.abs() * inv_a;
-                let ynb = py.abs() * inv_b;
+                let xna = pred_x.abs() * inv_a;
+                let ynb = pred_y.abs() * inv_b;
                 let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
 
                 if val <= 0.0 {
-                    system.x[i + j] = px;
-                    system.y[i + j] = py;
+                    system.x[i + j] = pred_x;
+                    system.y[i + j] = pred_y;
                     continue;
                 }
 
-                let sign_x = px.signum();
-                let sign_y = py.signum();
+                let sign_x = pred_x.signum();
+                let sign_y = pred_y.signum();
 
-                let xpow = pow_fast(px.abs() * inv_a, n_exp - 1.0);
-                let ypow = pow_fast(py.abs() * inv_b, m_exp - 1.0);
+                let xpow = pow_fast(pred_x.abs() * inv_a, n_exp - 1.0);
+                let ypow = pow_fast(pred_y.abs() * inv_b, m_exp - 1.0);
 
                 let df_dx = n_exp * inv_a * xpow * sign_x;
                 let df_dy = m_exp * inv_b * ypow * sign_y;
                 let len2 = df_dx * df_dx + df_dy * df_dy;
 
                 if len2 <= eps2 || len2 == 0.0 {
-                    system.x[i + j] = px;
-                    system.y[i + j] = py;
+                    system.x[i + j] = pred_x;
+                    system.y[i + j] = pred_y;
                     continue;
                 }
 
@@ -653,16 +653,16 @@ pub fn step_simd(
                 let nx = df_dx * inv_len;
                 let ny = df_dy * inv_len;
 
-                let vx = avx[j];
-                let vy = avy[j];
+                let vx = vel_x_lane[j];
+                let vy = vel_y_lane[j];
                 let vxn = vx * nx + vy * ny;
                 let rx = vx - 2.0 * vxn * nx;
                 let ry = vy - 2.0 * vxn * ny;
 
                 system.vx[i + j] = rx;
                 system.vy[i + j] = ry;
-                system.x[i + j] = px - rx * epsilon;
-                system.y[i + j] = py - ry * epsilon;
+                system.x[i + j] = pred_x - rx * epsilon;
+                system.y[i + j] = pred_y - ry * epsilon;
             }
 
             i += LANES;
@@ -684,31 +684,31 @@ pub fn step_simd(
                     let vxj = *vx_ptr.add(j);
                     let vyj = *vy_ptr.add(j);
 
-                    let px = xj + vxj * dt;
-                    let py = yj + vyj * dt;
-                    let xna = px.abs() * inv_a;
-                    let ynb = py.abs() * inv_b;
+                    let pred_x = xj + vxj * dt;
+                    let pred_y = yj + vyj * dt;
+                    let xna = pred_x.abs() * inv_a;
+                    let ynb = pred_y.abs() * inv_b;
                     let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
 
                     if val <= 0.0 {
-                        *x_ptr.add(j) = px;
-                        *y_ptr.add(j) = py;
+                        *x_ptr.add(j) = pred_x;
+                        *y_ptr.add(j) = pred_y;
                         return;
                     }
 
-                    let sign_x = px.signum();
-                    let sign_y = py.signum();
+                    let sign_x = pred_x.signum();
+                    let sign_y = pred_y.signum();
 
-                    let xpow = pow_fast(px.abs() * inv_a, n_exp - 1.0);
-                    let ypow = pow_fast(py.abs() * inv_b, m_exp - 1.0);
+                    let xpow = pow_fast(pred_x.abs() * inv_a, n_exp - 1.0);
+                    let ypow = pow_fast(pred_y.abs() * inv_b, m_exp - 1.0);
 
                     let df_dx = n_exp * inv_a * xpow * sign_x;
                     let df_dy = m_exp * inv_b * ypow * sign_y;
                     let len2 = df_dx * df_dx + df_dy * df_dy;
 
                     if len2 <= eps2 || len2 == 0.0 {
-                        *x_ptr.add(j) = px;
-                        *y_ptr.add(j) = py;
+                        *x_ptr.add(j) = pred_x;
+                        *y_ptr.add(j) = pred_y;
                         return;
                     }
 
@@ -722,8 +722,8 @@ pub fn step_simd(
 
                     *vx_ptr.add(j) = rx;
                     *vy_ptr.add(j) = ry;
-                    *x_ptr.add(j) = px - rx * epsilon;
-                    *y_ptr.add(j) = py - ry * epsilon;
+                    *x_ptr.add(j) = pred_x - rx * epsilon;
+                    *y_ptr.add(j) = pred_y - ry * epsilon;
                 }
             });
 
@@ -791,6 +791,7 @@ pub fn init_cluster(
 
                 let mut seed = seed0;
 
+                // keep the original unrolling pattern for performance, but clearer names
                 let mut i = 0usize;
                 while i + 4 <= len {
                     for k in 0..4 {
@@ -1307,9 +1308,9 @@ fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
     (msg, is_end)
 }
 
-fn try_insert_numeric(name: &str, used_indices: &mut AHashSet<u64>) {
-    if name.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(index) = name.parse::<u64>() {
+fn try_insert_numeric(candidate: &str, used_indices: &mut AHashSet<u64>) {
+    if candidate.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(index) = candidate.parse::<u64>() {
             used_indices.insert(index);
         }
     }
