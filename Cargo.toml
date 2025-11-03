@@ -1,7 +1,7 @@
 [package]
-name = "ParticleAnimatorRust"
+name = "particleanimatorrust"
 version = "0.1.1"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 ahash = { version = "0.8.12" }
@@ -14,7 +14,10 @@ num_cpus = { version = "1.17.0" }
 rayon = { version = "1.11.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
-mimalloc = "0.1.48"
+mimalloc =  { version = "0.1.48" }
+
+[dev-dependencies]
+# TODO: add dev-dependencies here
 
 [profile.release]
 opt-level = 3                # maximize LLVM optimizations for runtime speed
@@ -28,3 +31,27 @@ strip = "symbols"            # strip symbols from the final binary to reduce siz
 optimize-attributes = true   # enable optimizations based on function attributes
 debug-assertions = false     # disable debug assertions for performance
 test = false                 # disable test code in release builds
+
+[profile.bench]
+inherits = "release"         # inherit settings from the release profile
+debug = true                 # enable debug info for benchmarks
+overflow-checks = true       # enable overflow checks for benchmarks
+panic = "unwind"             # enable unwinding for benchmarks
+strip = "none"               # do not strip symbols from benchmark binaries
+
+[profile.dev]
+opt-level = 1                # some optimizations for faster debug builds
+debug = 2                    # include debug info
+overflow-checks = true       # enable integer overflow checks
+incremental = true           # enable incremental compilation for faster rebuilds
+panic = "unwind"             # enable unwinding on panic
+strip = "none"               # do not strip symbols from debug builds
+test = true                  # enable test code in debug builds
+
+[profile.test]
+inherits = "dev"             # inherit settings from the dev profile
+debug = true                 # enable debug info for tests
+overflow-checks = true       # enable overflow checks for tests
+panic = "unwind"             # enable unwinding for tests
+strip = "none"               # do not strip symbols from test binaries
+test = true                  # enable test code in test builds
