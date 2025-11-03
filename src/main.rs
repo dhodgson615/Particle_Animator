@@ -444,7 +444,6 @@ fn precompute_boundary_pixels(
         })
         .collect();
 
-    // generate all line points in parallel, flatten, then sort+dedup to deduplicate without locks
     let n = sampled_pts.len();
     let mut all_pts: Vec<(i64, i64)> = (0..n)
         .into_par_iter()
@@ -455,7 +454,6 @@ fn precompute_boundary_pixels(
         })
         .collect();
 
-    // sort and dedup on the CPU thread (deterministic and lock-free)
     all_pts.sort_unstable();
     all_pts.dedup();
 
@@ -502,7 +500,6 @@ fn draw_boundary(
         image.par_chunks_mut((width * 3) as usize).enumerate().for_each(|(y, row)| {
             let base_row_idx = y * w;
 
-            // inner loop: operate on 3-byte chunks (RGB) for cache-friendly writes
             for (x, pixel) in row.chunks_mut(3).enumerate() {
                 let idx = base_row_idx + x;
                 if atoms[idx].load(Relaxed) != 0 {
@@ -672,8 +669,6 @@ pub fn step_simd(
 
             i += LANES;
         } else {
-            // Wrap raw pointers into Arc<AtomicPtr<_>> to satisfy Sync required by Rayon,
-            // then load the pointer inside each thread and perform unsafe reads/writes.
             use std::sync::atomic::Ordering;
 
             let x_atomic = Arc::new(AtomicPtr::new(system.x.as_mut_ptr()));
@@ -682,7 +677,6 @@ pub fn step_simd(
             let vy_atomic = Arc::new(AtomicPtr::new(system.vy.as_mut_ptr()));
 
             (i..n).into_par_iter().for_each(|j| {
-                // load pointer (cheap, atomic) then do unsafe work on distinct indices
                 let x_ptr = x_atomic.load(Ordering::Relaxed);
                 let y_ptr = y_atomic.load(Ordering::Relaxed);
                 let vx_ptr = vx_atomic.load(Ordering::Relaxed);
@@ -801,7 +795,6 @@ pub fn init_cluster(
 
                 let mut seed = seed0;
 
-                // Simple 4-way unrolled loop to reduce per-iteration overhead (vectorization-friendly)
                 let mut i = 0usize;
                 while i + 4 <= len {
                     for k in 0..4 {
@@ -827,7 +820,6 @@ pub fn init_cluster(
                     i += 4;
                 }
 
-                // Remainder
                 for j in i..len {
                     let s1 = splitmix64(seed);
                     seed = s1;
@@ -977,7 +969,6 @@ pub fn run_frame_generation(
     let mut histogram_buf = vec![0f32; total_bins];
     let mut h_log_flat = vec![0f32; total_bins];
 
-    // Consolidate ffmpeg args into a vector to avoid repetitive `.arg(...)` calls
     let mut cmd = Command::new("ffmpeg");
     let mut args: Vec<String> = Vec::new();
 
@@ -1345,14 +1336,12 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
         if path.extension().map_or(false, |ext| ext == "mp4") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 if let Ok(mut set) = used_indices.lock() {
-                    // deduplicate the logic by using try_insert_numeric
                     try_insert_numeric(stem, &mut set);
                 }
             }
         } else if path.is_dir() {
             if let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) {
                 if let Ok(mut set) = used_indices.lock() {
-                    // deduplicate the logic by using try_insert_numeric
                     try_insert_numeric(dir_name, &mut set);
                 }
             }
@@ -1516,14 +1505,11 @@ fn render(
 
     let mut img = RgbImage::new(width, height);
 
-    // precompute scale based on per-frame max to avoid per-pixel repeated work
     let palette_len = palette.len();
     let max_v = h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
-    // avoid divide by zero; small epsilon and mild boost to keep colors varied
     let scale =
         if max_v > 0.0 { (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32) } else { 1.0 };
 
-    // copy palette reference for faster indexing
     let palette_ref: &[[u8; 3]] = &palette;
 
     pool.install(|| {
