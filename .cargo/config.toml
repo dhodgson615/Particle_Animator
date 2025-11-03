@@ -2,6 +2,6 @@
 rustflags = [
     "-C", "target-cpu=native",
     "-Cllvm-args=--inline-threshold=100000",  # Range: 0-100000, higher is more aggressive inlining
-    "-Cllvm-args=--unroll-threshold=1000",   # Range: 0-100000, higher is more aggressive unrolling
-    # "-Cllvm-args=--inline-call-penalty=900",  # Range: 0-1000, lower is more aggressive inlining
-]
+    "-Cllvm-args=--inline-call-penalty=0",    # Range: 0-1000, lower is more aggressive inlining
+    "-Cllvm-args=--unroll-threshold=16370",   # Range: 0-100000, higher is more aggressive unrolling
+]                           # 16369 < n < 16371
