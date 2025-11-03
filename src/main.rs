@@ -347,8 +347,15 @@ pub fn compute_histogram(
     y_edges: &[f32],
     bins: u32,
     pool: &ThreadPool,
-) -> Vec<f32> {
+    out: &mut [f32],
+) {
     let bins_usize = bins as usize;
+    let total_bins = bins_usize.saturating_mul(bins_usize);
+
+    if out.len() < total_bins {
+        return;
+    }
+
     let x_min = x_edges[0];
     let x_max = *x_edges.last().unwrap_or(&x_min);
     let y_min = y_edges[0];
@@ -359,9 +366,8 @@ pub fn compute_histogram(
     let dx_inv = if dx != 0.0 { 1.0 / dx } else { 0.0 };
     let dy_inv = if dy != 0.0 { 1.0 / dy } else { 0.0 };
 
-    let total_bins = bins_usize * bins_usize;
-
     let n = system.len();
+
     let combined: Vec<u32> = pool.install(|| {
         (0..n)
             .into_par_iter()
@@ -374,9 +380,9 @@ pub fn compute_histogram(
                     let ix = ((px - x_min) * dx_inv) as i32;
                     let iy = ((py - y_min) * dy_inv) as i32;
 
-                    let bins = bins as i32;
+                    let bins_i = bins as i32;
 
-                    if ix >= 0 && ix < bins && iy >= 0 && iy < bins {
+                    if ix >= 0 && ix < bins_i && iy >= 0 && iy < bins_i {
                         let id = (iy as usize) * bins_usize + (ix as usize);
                         local[id] = local[id].wrapping_add(1);
                     }
@@ -394,7 +400,9 @@ pub fn compute_histogram(
             )
     });
 
-    combined.into_iter().map(|c| c as f32).collect()
+    for (i, c) in combined.into_iter().enumerate().take(total_bins) {
+        out[i] = c as f32;
+    }
 }
 
 fn bresenham_points(
@@ -1112,15 +1120,14 @@ pub fn run_frame_generation(
                 config.m_exp,
             );
 
-            let hist = compute_histogram(
+            compute_histogram(
                 &sim_data.system,
                 &sim_data.x_edges,
                 &sim_data.y_edges,
                 config.res,
-                &sim_data.sim_pool,
+                &*sim_data.sim_pool,
+                &mut histogram_buf,
             );
-
-            histogram_buf.copy_from_slice(&hist);
 
             h_log_flat.par_iter_mut().zip(&histogram_buf).for_each(
                 |(h, &v)| {
