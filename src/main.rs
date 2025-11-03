@@ -1268,6 +1268,7 @@ pub fn generate_video(
 
     for line_res in reader.lines() {
         let line = line_res?;
+
         if line.is_empty() {
             continue;
         }
@@ -1276,6 +1277,7 @@ pub fn generate_video(
         let kv_map = parse_kv_from_parts(&parts);
 
         let (msg, is_end) = build_progress_msg(&kv_map);
+
         if msg != last_msg {
             spinner.set_message(msg.clone());
             last_msg = msg;
@@ -1342,6 +1344,7 @@ fn size_to_bytes(s: &str) -> Option<u64> {
     for (unit, mul) in &units {
         if s_upper.ends_with(unit) {
             let num = s_upper.trim_end_matches(unit).trim();
+
             if let Ok(f) = num.parse::<f64>() {
                 return Some((f * (*mul as f64)).round() as u64);
             }
@@ -1357,16 +1360,19 @@ fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
 
     while i < parts.len() {
         let part = parts[i];
+
         if let Some(eq_pos) = part.find('=') {
             let key = part[..eq_pos].trim().to_string();
             let mut val = part[eq_pos + 1..].trim();
-            if val.is_empty()
-                && (i + 1) < parts.len()
-                && !parts[i + 1].contains('=')
-            {
+
+            let next_has_value =
+                parts.get(i + 1).map_or(false, |p| !p.contains('='));
+
+            if val.is_empty() && next_has_value {
                 i += 1;
                 val = parts[i].trim();
             }
+
             kv_map.insert(key, val.to_string());
         }
         i += 1;
@@ -1393,9 +1399,9 @@ fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
         parts_msg.push(format!("speed:{}", speed.trim()));
     }
 
-    if let Some(out_time) =
-        kv_map.get("progress").or_else(|| kv_map.get("time"))
-    {
+    let out_time_opt = kv_map.get("progress").or_else(|| kv_map.get("time"));
+
+    if let Some(out_time) = out_time_opt {
         parts_msg.push(format!("time:{}", out_time.trim()));
     }
 
@@ -1550,14 +1556,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Frames saved: {}", frame_count_res);
     println!("Date: {}", dirs.meta.get("date").unwrap_or(&Null));
+
     println!(
         "Total compute time: {}s",
         dirs.meta.get("compute_time").unwrap_or(&Value::from(0.0))
     );
+
     println!(
         "Video dir size: {:.2} MB",
         total_size_bytes_res as f64 / 1_000_000.0
     );
+
     println!("Continue generating frames? (y/n): ");
 
     let mut response = String::new();
@@ -1568,6 +1577,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Total elapsed time: {:.2}s",
             program_start.elapsed().as_secs_f64()
         );
+
         return Ok(());
     }
 
@@ -1619,8 +1629,10 @@ fn render(
     let mut img = RgbImage::new(width, height);
 
     let palette_len = palette.len();
+
     let max_v =
         h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
+
     let scale = if max_v > 0.0 {
         (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32)
     } else {
@@ -1633,24 +1645,30 @@ fn render(
         img.par_chunks_mut((width * 3) as usize).enumerate().for_each(
             |(y, row)| {
                 let base_idx = y * w;
+
                 for (x, pixel) in row.chunks_mut(3).enumerate() {
                     let idx = base_idx + x;
+
                     if idx >= pixel_bin_map.len() {
                         pixel[0] = 0;
                         pixel[1] = 0;
                         pixel[2] = 0;
                         continue;
                     }
+
                     let bin = pixel_bin_map[idx];
+
                     if bin >= h_log_flat.len() {
                         pixel[0] = 0;
                         pixel[1] = 0;
                         pixel[2] = 0;
                         continue;
                     }
+
                     let v = h_log_flat[bin].max(0.0);
                     let pi = ((v.sqrt() * scale) as usize).min(palette_len - 1);
                     let col = palette_ref[pi];
+
                     pixel[0] = col[0];
                     pixel[1] = col[1];
                     pixel[2] = col[2];
