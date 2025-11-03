@@ -20,38 +20,32 @@ mimalloc =  { version = "0.1.48" }
 criterion = { version = "0.7.0" }
 
 [profile.release]
-opt-level = 3                # maximize LLVM optimizations for runtime speed
-lto = "fat"                  # full LTO (whole-program optimizations at link time)
-codegen-units = 1            # single codegen unit => best cross-function inlining
-debug = 0                    # no debug info in final binary
-incremental = false          # turn off incremental compilation for a clean full-optim build
-overflow-checks = false      # remove integer overflow checks for speed (unsafe if overflows may occur)
-panic = "abort"              # abort on panic (no unwinding overhead)
-strip = "symbols"            # strip symbols from the final binary to reduce size
-optimize-attributes = true   # enable optimizations based on function attributes
-debug-assertions = false     # disable debug assertions for performance
-test = false                 # disable tests code in release builds
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = 0
+incremental = false
+overflow-checks = false
+strip = true
 
 [profile.bench]
-inherits = "release"         # inherit settings from the release profile
-debug = true                 # enable debug info for benchmarks
-overflow-checks = true       # enable overflow checks for benchmarks
-panic = "unwind"             # enable unwinding for benchmarks
-strip = "none"               # do not strip symbols from benchmark binaries
+inherits = "release"
+debug = true
+overflow-checks = true
+strip = "none"
 
 [profile.dev]
-opt-level = 1                # some optimizations for faster debug builds
-debug = 2                    # include debug info
-overflow-checks = true       # enable integer overflow checks
-incremental = true           # enable incremental compilation for faster rebuilds
-panic = "unwind"             # enable unwinding on panic
-strip = "none"               # do not strip symbols from debug builds
-test = true                  # enable tests code in debug builds
+opt-level = 1
+debug = 2
+overflow-checks = true
+incremental = true
+panic = "unwind"
+strip = "none"
 
 [profile.test]
-inherits = "dev"             # inherit settings from the dev profile
-debug = true                 # enable debug info for tests
-overflow-checks = true       # enable overflow checks for tests
-panic = "unwind"             # enable unwinding for tests
-strip = "none"               # do not strip symbols from tests binaries
-test = true                  # enable tests code in tests builds
+inherits = "dev"
+debug = true
+overflow-checks = true
+panic = "unwind"
+strip = "none"
+
