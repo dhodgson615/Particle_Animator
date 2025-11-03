@@ -38,29 +38,29 @@ use thread::scope;
 #[global_allocator]
 static GLOBAL_ALLOC: MiMalloc = MiMalloc; /* Do not change this line */
 
-const A: f32 = 1.0;
-const B: f32 = 1.0;
-const N_EXP: f32 = 2.0;
-const M_EXP: f32 = 2.0;
-const DT: f32 = 0.0001;
-const EPSILON: f32 = 1e-8;
-const CEN_X: f32 = 0.1;
-const CEN_Y: f32 = -0.1;
-const RADIUS: f32 = 0.1;
-const VX0: f32 = 1.0;
-const VY0: f32 = 0.0;
-const N_PARTICLES: u64 = 1000;
-const FPS: u64 = 60;
-const DURATION_S: u64 = 10;
-const STEPS_PER_FRAME: u64 = 300;
-const RES: u32 = 932;
-const DPI: u32 = 300;
-const HISTOGRAM_FACTOR: f32 = 1.25;
+pub const A: f32 = 1.0;
+pub const B: f32 = 1.0;
+pub const N_EXP: f32 = 2.0;
+pub const M_EXP: f32 = 2.0;
+pub const DT: f32 = 0.0001;
+pub const EPSILON: f32 = 1e-8;
+pub const CEN_X: f32 = 0.1;
+pub const CEN_Y: f32 = -0.1;
+pub const RADIUS: f32 = 0.1;
+pub const VX0: f32 = 1.0;
+pub const VY0: f32 = 0.0;
+pub const N_PARTICLES: u64 = 1000;
+pub const FPS: u64 = 60;
+pub const DURATION_S: u64 = 10;
+pub const STEPS_PER_FRAME: u64 = 300;
+pub const RES: u32 = 932;
+pub const DPI: u32 = 300;
+pub const HISTOGRAM_FACTOR: f32 = 1.25;
 
-const SHAPE_SAMPLE_POINTS: usize = 1000;
-const SEED_MULTIPLIER: u64 = 0x9E3779B97F4A7C15;
-const FIG_INCHES: f32 = 8.0;
-const BOUNDARY_THICKNESS: usize = 2;
+pub const SHAPE_SAMPLE_POINTS: usize = 1000;
+pub const SEED_MULTIPLIER: u64 = 0x9E3779B97F4A7C15;
+pub const FIG_INCHES: f32 = 8.0;
+pub const BOUNDARY_THICKNESS: usize = 2;
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -191,7 +191,7 @@ impl Vec3 {
     }
 }
 
-fn rgb_from_wavelength(wl: f32, gamma: f32) -> Vec3 {
+pub fn rgb_from_wavelength(wl: f32, gamma: f32) -> Vec3 {
     let (r, g, b) = if (380.0..=440.0).contains(&wl) {
         let t = (wl - 380.0) / 60.0;
         ((-t + 1.0).clamp(0.0, 1.0), 0.0, 1.0)
@@ -296,7 +296,7 @@ pub fn histogram_edges(
     (x_edges, y_edges)
 }
 
-fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
+pub fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
     let (width_px, height_px) = out_px;
     let w = width_px as usize;
     let h = height_px as usize;
@@ -318,7 +318,7 @@ fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
         .collect()
 }
 
-fn precompute_thickness_offsets(thickness: usize) -> Vec<(i64, i64)> {
+pub fn precompute_thickness_offsets(thickness: usize) -> Vec<(i64, i64)> {
     let radius = thickness as i64;
     let radius_sq = radius * radius;
 
@@ -408,7 +408,7 @@ pub fn compute_histogram(
     }
 }
 
-fn bresenham_points(
+pub fn bresenham_points(
     mut x0: i64,
     mut y0: i64,
     x1: i64,
@@ -444,7 +444,7 @@ fn bresenham_points(
     points
 }
 
-fn precompute_boundary_pixels(
+pub fn precompute_boundary_pixels(
     bx: &[f32],
     by: &[f32],
     x_edges: &[f32],
@@ -520,7 +520,7 @@ fn precompute_boundary_pixels(
     all_points
 }
 
-fn draw_boundary(
+pub fn draw_boundary(
     image: &mut RgbImage,
     bresenham_px: &[(i64, i64)],
     width: u32,
@@ -637,11 +637,11 @@ impl ParticleSystem {
 
 const LANES: usize = 8;
 
-fn approx_eq(a: f32, b: f32) -> bool {
+pub fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 1e-6
 }
 
-fn pow_fast(value: f32, exponent: f32) -> f32 {
+pub fn pow_fast(value: f32, exponent: f32) -> f32 {
     if approx_eq(exponent, 1.0) {
         value
     } else if approx_eq(exponent, 2.0) {
@@ -831,7 +831,7 @@ pub fn init_cluster(
     let mut system = ParticleSystem::with_capacity(n_usize);
     system.resize(n_usize);
 
-    fn splitmix64(mut x: u64) -> u64 {
+    pub fn splitmix64(mut x: u64) -> u64 {
         x = x.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = x;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
@@ -1016,7 +1016,7 @@ impl SimulationData {
     }
 }
 
-fn compute_out_px(dpi: u32) -> (u32, u32) {
+pub fn compute_out_px(dpi: u32) -> (u32, u32) {
     let size = (FIG_INCHES * dpi as f32).round() as u32;
     (size, size)
 }
@@ -1322,7 +1322,7 @@ pub fn generate_video(
     Ok(())
 }
 
-fn size_to_bytes(s: &str) -> Option<u64> {
+pub fn size_to_bytes(s: &str) -> Option<u64> {
     let s = s.trim();
 
     if s.is_empty() || s.eq_ignore_ascii_case("N/A") {
@@ -1364,7 +1364,7 @@ fn size_to_bytes(s: &str) -> Option<u64> {
     None
 }
 
-fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
+pub fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
     let mut kv_map: AHashMap<String, String> = AHashMap::new();
     let mut i = 0;
 
@@ -1391,7 +1391,7 @@ fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
     kv_map
 }
 
-fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
+pub fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
     let mut parts_msg = Vec::new();
 
     if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size"))
@@ -1421,7 +1421,7 @@ fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
     (msg, is_end)
 }
 
-fn try_insert_numeric(candidate: &str, used_indices: &mut AHashSet<u64>) {
+pub fn try_insert_numeric(candidate: &str, used_indices: &mut AHashSet<u64>) {
     if candidate.chars().all(|c| c.is_ascii_digit()) {
         if let Ok(index) = candidate.parse::<u64>() {
             used_indices.insert(index);
@@ -1624,7 +1624,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn render(
+pub fn render(
     h_log_flat: &[f32],
     boundary_pixels: &Arc<Vec<(i64, i64)>>,
     palette: &Arc<Vec<[u8; 3]>>,
