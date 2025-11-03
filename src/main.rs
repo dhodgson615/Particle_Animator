@@ -403,8 +403,6 @@ fn precompute_boundary_pixels(
     out_px: (u32, u32),
     sample_n: usize,
 ) -> Vec<(i64, i64)> {
-    use ahash::AHashSet;
-
     let (width, height) = out_px;
     let bins = sample_n.max(3);
     let x_span = (x_edges.last().cloned().unwrap_or(0.0) - x_edges[0]).abs().max(1e-6);
@@ -669,18 +667,16 @@ pub fn step_simd(
 
             i += LANES;
         } else {
-            use std::sync::atomic::Ordering;
-
             let x_atomic = Arc::new(AtomicPtr::new(system.x.as_mut_ptr()));
             let y_atomic = Arc::new(AtomicPtr::new(system.y.as_mut_ptr()));
             let vx_atomic = Arc::new(AtomicPtr::new(system.vx.as_mut_ptr()));
             let vy_atomic = Arc::new(AtomicPtr::new(system.vy.as_mut_ptr()));
 
             (i..n).into_par_iter().for_each(|j| {
-                let x_ptr = x_atomic.load(Ordering::Relaxed);
-                let y_ptr = y_atomic.load(Ordering::Relaxed);
-                let vx_ptr = vx_atomic.load(Ordering::Relaxed);
-                let vy_ptr = vy_atomic.load(Ordering::Relaxed);
+                let x_ptr = x_atomic.load(Relaxed);
+                let y_ptr = y_atomic.load(Relaxed);
+                let vx_ptr = vx_atomic.load(Relaxed);
+                let vy_ptr = vy_atomic.load(Relaxed);
 
                 unsafe {
                     let xj = *x_ptr.add(j);
