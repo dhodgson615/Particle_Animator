@@ -150,7 +150,7 @@ impl Config {
     }
 }
 
-const PALETTE_SIZE: usize = 256;
+pub const PALETTE_SIZE: usize = 256;
 
 pub type Vector3D<T> = [T; 3];
 
@@ -1697,9 +1697,4 @@ pub fn render(
     );
 
     img
-}
-
-#[cfg(test)]
-mod tests {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/test/test.rs"));
 }

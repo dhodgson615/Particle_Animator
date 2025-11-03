@@ -1,7 +1,17 @@
+use std::sync::Arc;
+
+use image::RgbImage;
+use particleanimatorrust::{
+    approx_eq, bresenham_points, build_palette, build_progress_msg,
+    compute_histogram, compute_out_px, draw_boundary, histogram_edges,
+    init_cluster, parse_kv_from_parts, pow_fast, precompute_boundary_pixels,
+    precompute_pixel_bin_map, precompute_thickness_offsets, render,
+    rgb_from_wavelength, size_to_bytes, step_simd, Config, ParticleSystem,
+    SimulationData, PALETTE_SIZE,
+};
 use rayon::ThreadPoolBuilder;
 
-use super::*; /* Imports say they are unused but the code doesn't compile
-              without them */
+/* Imports say they are unused but the code doesn't compile without them */
 
 #[test]
 fn test_build_palette_length_and_bounds() {
@@ -135,6 +145,7 @@ fn test_size_to_bytes_various() {
 #[test]
 fn test_histogram_edges_lengths() {
     let (x_edges, y_edges) = histogram_edges(1.0, 2.0, 10, 1.25);
+
     assert_eq!(x_edges.len(), 11);
     assert_eq!(y_edges.len(), 11);
     assert!(x_edges[0] < *x_edges.last().unwrap());

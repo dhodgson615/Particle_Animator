@@ -30,7 +30,7 @@ panic = "abort"              # abort on panic (no unwinding overhead)
 strip = "symbols"            # strip symbols from the final binary to reduce size
 optimize-attributes = true   # enable optimizations based on function attributes
 debug-assertions = false     # disable debug assertions for performance
-test = false                 # disable test code in release builds
+test = false                 # disable tests code in release builds
 
 [profile.bench]
 inherits = "release"         # inherit settings from the release profile
@@ -46,12 +46,12 @@ overflow-checks = true       # enable integer overflow checks
 incremental = true           # enable incremental compilation for faster rebuilds
 panic = "unwind"             # enable unwinding on panic
 strip = "none"               # do not strip symbols from debug builds
-test = true                  # enable test code in debug builds
+test = true                  # enable tests code in debug builds
 
 [profile.test]
 inherits = "dev"             # inherit settings from the dev profile
 debug = true                 # enable debug info for tests
 overflow-checks = true       # enable overflow checks for tests
 panic = "unwind"             # enable unwinding for tests
-strip = "none"               # do not strip symbols from test binaries
-test = true                  # enable test code in test builds
+strip = "none"               # do not strip symbols from tests binaries
+test = true                  # enable tests code in tests builds
