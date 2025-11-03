@@ -1,6 +1,7 @@
-use super::*;
-use rayon::ThreadPoolBuilder; /* Imports say they are unused but the code
-                                 doesn't compile without them */
+use rayon::ThreadPoolBuilder;
+
+use super::*; /* Imports say they are unused but the code doesn't compile
+              without them */
 
 #[test]
 fn test_build_palette_length_and_bounds() {
@@ -53,7 +54,6 @@ fn test_compute_histogram_simple() {
     assert!(counts.into_iter().all(|c| c >= 1));
 }
 
-
 #[test]
 fn test_pow_fast_special_cases() {
     let v = 2.0f32;
@@ -95,19 +95,22 @@ fn test_compute_out_px_scaling() {
 fn test_bresenham_points_line() {
     let pts = bresenham_points(0, 0, 3, 3);
     assert!(pts.len() >= 4);
-    assert!(pts.contains(&(0,0)));
-    assert!(pts.contains(&(3,3)));
+    assert!(pts.contains(&(0, 0)));
+    assert!(pts.contains(&(3, 3)));
 }
 
 #[test]
 fn test_parse_kv_from_parts_and_build_progress_msg() {
     let parts = vec!["frame=1", "fps=30", "progress=end", "size=1.5MB"];
-    let kv = parse_kv_from_parts(&parts.iter().map(|s| *s).collect::<Vec<&str>>());
+    let kv =
+        parse_kv_from_parts(&parts.iter().map(|s| *s).collect::<Vec<&str>>());
     assert_eq!(kv.get("frame").map(|s| s.as_str()), Some("1"));
     assert_eq!(kv.get("fps").map(|s| s.as_str()), Some("30"));
 
     let (msg, is_end) = build_progress_msg(&kv);
-    assert!(msg.contains("fps:30") || msg.contains("1.5MB") || msg.contains("time"));
+    assert!(
+        msg.contains("fps:30") || msg.contains("1.5MB") || msg.contains("time")
+    );
     assert!(is_end);
 }
 

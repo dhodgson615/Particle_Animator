@@ -1,8 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rayon::ThreadPoolBuilder;
 use std::sync::Arc;
 
+use criterion::{
+    black_box, criterion_group, criterion_main, BenchmarkId, Criterion,
+};
 use particleanimatorrust::*;
+use rayon::ThreadPoolBuilder;
 
 fn bench_pow_fast(c: &mut Criterion) {
     let mut g = c.benchmark_group("pow_fast");
@@ -21,14 +23,29 @@ fn bench_build_palette(c: &mut Criterion) {
 
 fn bench_shape_boundary(c: &mut Criterion) {
     c.bench_function("shape_boundary_1000", |b| {
-        b.iter(|| shape_boundary(black_box(1.0f32), black_box(1.0f32), black_box(2.0f32), black_box(2.0f32), black_box(1000usize)))
+        b.iter(|| {
+            shape_boundary(
+                black_box(1.0f32),
+                black_box(1.0f32),
+                black_box(2.0f32),
+                black_box(2.0f32),
+                black_box(1000usize),
+            )
+        })
     });
 }
 
 fn bench_init_cluster(c: &mut Criterion) {
     c.bench_function("init_cluster_4096", |b| {
         b.iter(|| {
-            init_cluster(black_box(4096u64), black_box(0.1f32), black_box(0.0f32), black_box(0.0f32), black_box(1.0f32), black_box(0.0f32))
+            init_cluster(
+                black_box(4096u64),
+                black_box(0.1f32),
+                black_box(0.0f32),
+                black_box(0.0f32),
+                black_box(1.0f32),
+                black_box(0.0f32),
+            )
         })
     });
 }
@@ -39,12 +56,20 @@ fn bench_step_simd_small(c: &mut Criterion) {
     c.bench_function("step_simd_2048_one_step", |b| {
         b.iter(|| {
             let mut sys = ParticleSystem {
-                x: src.x.clone(),
-                y: src.y.clone(),
+                x:  src.x.clone(),
+                y:  src.y.clone(),
                 vx: src.vx.clone(),
                 vy: src.vy.clone(),
             };
-            step_simd(&mut sys, black_box(0.0001f32), black_box(1e-8f32), black_box(1.0f32), black_box(1.0f32), black_box(2.0f32), black_box(2.0f32));
+            step_simd(
+                &mut sys,
+                black_box(0.0001f32),
+                black_box(1e-8f32),
+                black_box(1.0f32),
+                black_box(1.0f32),
+                black_box(2.0f32),
+                black_box(2.0f32),
+            );
             black_box(sys)
         })
     });
@@ -59,12 +84,19 @@ fn bench_compute_histogram(c: &mut Criterion) {
     c.bench_function("compute_histogram_128", |b| {
         b.iter(|| {
             let system_copy = ParticleSystem {
-                x: sys.x.clone(),
-                y: sys.y.clone(),
+                x:  sys.x.clone(),
+                y:  sys.y.clone(),
                 vx: sys.vx.clone(),
                 vy: sys.vy.clone(),
             };
-            compute_histogram(&system_copy, &x_edges, &y_edges, 128, &pool, &mut out.clone());
+            compute_histogram(
+                &system_copy,
+                &x_edges,
+                &y_edges,
+                128,
+                &pool,
+                &mut out.clone(),
+            );
             black_box(&out);
         })
     });
@@ -86,25 +118,39 @@ fn bench_precompute_boundary_pixels(c: &mut Criterion) {
     let out_px = compute_out_px(100);
     c.bench_function("precompute_boundary_pixels_256", |b| {
         b.iter(|| {
-            precompute_boundary_pixels(&bx, &by, &x_edges, &y_edges, out_px, 256usize);
+            precompute_boundary_pixels(
+                &bx, &by, &x_edges, &y_edges, out_px, 256usize,
+            );
         })
     });
 }
 
 fn bench_render_small(c: &mut Criterion) {
-    let pool = Arc::new(ThreadPoolBuilder::new().num_threads(2).build().unwrap());
+    let pool =
+        Arc::new(ThreadPoolBuilder::new().num_threads(2).build().unwrap());
     let palette = Arc::new(build_palette());
     let (bx, by) = shape_boundary(1.0f32, 1.0f32, 2.0f32, 2.0f32, 500usize);
     let (x_edges, y_edges) = histogram_edges(1.0f32, 1.0f32, 128, 1.25f32);
     let out_px = compute_out_px(100);
-    let boundary_pixels = Arc::new(precompute_boundary_pixels(&bx, &by, &x_edges, &y_edges, out_px, 128usize));
+    let boundary_pixels = Arc::new(precompute_boundary_pixels(
+        &bx, &by, &x_edges, &y_edges, out_px, 128usize,
+    ));
     let pixel_bin_map = Arc::new(precompute_pixel_bin_map(out_px, 128usize));
-    let thickness_offsets = Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
+    let thickness_offsets =
+        Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
     let mut h_log_flat = vec![1.0f32; 128 * 128];
 
     c.bench_function("render_128", |b| {
         b.iter(|| {
-            let img = render(&h_log_flat, &boundary_pixels, &palette, out_px, &pool, &pixel_bin_map, &thickness_offsets);
+            let img = render(
+                &h_log_flat,
+                &boundary_pixels,
+                &palette,
+                out_px,
+                &pool,
+                &pixel_bin_map,
+                &thickness_offsets,
+            );
             black_box(img);
         })
     });
