@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use image::RgbImage;
 use particleanimatorrust::{
-    approx_eq, bresenham_points, build_palette, build_progress_msg,
-    compute_histogram, compute_out_px, draw_boundary, histogram_edges,
-    init_cluster, parse_kv_from_parts, pow_fast, precompute_boundary_pixels,
+    Config, PALETTE_SIZE, ParticleSystem, SimulationData, approx_eq,
+    bresenham_points, build_palette, build_progress_msg, compute_histogram,
+    compute_out_px, draw_boundary, histogram_edges, init_cluster,
+    parse_kv_from_parts, pow_fast, precompute_boundary_pixels,
     precompute_pixel_bin_map, precompute_thickness_offsets, render,
-    rgb_from_wavelength, size_to_bytes, step_simd, Config, ParticleSystem,
-    SimulationData, PALETTE_SIZE,
+    rgb_from_wavelength, size_to_bytes, step_simd,
 };
 use rayon::ThreadPoolBuilder;
 
@@ -265,7 +265,7 @@ fn test_render_basic_nonblack() {
 }
 
 #[test]
-fn test_simulationdata_new_small_config() {
+fn test_simulation_data_new_small_config() {
     let config = Config {
         a:               1.0,
         b:               1.0,
