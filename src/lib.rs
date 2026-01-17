@@ -2,15 +2,13 @@ use std::{
     cmp,
     error::Error,
     f32::consts::PI,
-    fs::{create_dir_all, read_dir, read_to_string, write, DirEntry},
-    io::{stdin, BufRead, BufReader, Write},
+    fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
+    io::{BufRead, BufReader, Write, stdin},
     path::{Path, PathBuf},
-    process::{
-        Command, Stdio, {self},
-    },
+    process::{self, Command, Stdio},
     sync::{
-        atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
         Arc, Mutex,
+        atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
     },
     thread,
     time::{Duration, Instant},
@@ -25,13 +23,14 @@ use image::RgbImage;
 use indicatif::{ProgressBar, ProgressStyle};
 use mimalloc::MiMalloc;
 use num_cpus;
-use rayon::{prelude::*, ThreadPool, ThreadPoolBuilder};
+use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{
-    from_str, json, to_string_pretty, Map,
+    Map,
     Value::{
         Null, Object, {self},
     },
+    from_str, json, to_string_pretty,
 };
 use thread::scope;
 
@@ -222,11 +221,7 @@ pub fn rgb_from_wavelength(wl: f32, gamma: f32) -> Vec3 {
     };
 
     let apply_gamma = |c: f32| -> f32 {
-        if c <= 0.0 {
-            0.0
-        } else {
-            c.powf(gamma).clamp(0.0, 1.0)
-        }
+        if c <= 0.0 { 0.0 } else { c.powf(gamma).clamp(0.0, 1.0) }
     };
 
     Vec3::new(apply_gamma(r * s), apply_gamma(g * s), apply_gamma(b * s))
