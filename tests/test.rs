@@ -11,8 +11,6 @@ use particleanimatorrust::{
 };
 use rayon::ThreadPoolBuilder;
 
-/* Imports say they are unused but the code doesn't compile without them */
-
 #[test]
 fn test_build_palette_length_and_bounds() {
     let palette = build_palette();
