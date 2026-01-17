@@ -24,7 +24,7 @@
 - Attempt to use an arena allocator for better memory management.
 - Reuse buffers where possible to reduce freeing and reallocating memory.
 - Look into creating a custom memory allocator tailored to the application's needs.
-- Look into cross platform GPU libraries that work on Mac (including/especially Apple Silicon) and Linux, such as `wgpu` or `vulkan`.
+- Look into cross-platform GPU libraries that work on Mac (including/especially Apple Silicon) and Linux, such as `wgpu` or `vulkan`.
 - Add a command line flag for enabling/disabling GPU acceleration.
 - Prototype GPU acceleration for compute-heavy tasks and benchmark against CPU-only implementation.
 - Find out if shaders
