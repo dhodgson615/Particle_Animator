@@ -30,3 +30,5 @@
 - Find out if shaders
 - Find ways to overlap CPU and GPU work to maximize resource utilization.
 - Consider adding web support using WebAssembly (WASM) and publishing a web version of the tool.
+- Consider making it so that the CLI parsing is optional, allowing the core simulation library to be used as a dependency in other Rust projects and allowing compile-time optimizations by removing unused features.
+-
