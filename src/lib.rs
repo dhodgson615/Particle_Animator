@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{
     Map,
     Value::{
-        Null, Object, {self},
+        Null, Object, self,
     },
     from_str, json, to_string_pretty,
 };
