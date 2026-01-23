@@ -10,7 +10,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
     },
-    thread,
+    thread::scope,
     time::{Duration, Instant},
 };
 
@@ -27,12 +27,9 @@ use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{
     Map,
-    Value::{
-        Null, Object, self,
-    },
+    Value::{self, Null, Object},
     from_str, json, to_string_pretty,
 };
-use thread::scope;
 
 #[global_allocator]
 static GLOBAL_ALLOC: MiMalloc = MiMalloc; /* Do not change this line */
@@ -651,6 +648,44 @@ pub fn pow_fast(value: f32, exponent: f32) -> f32 {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PowMode {
+    One,
+    Two,
+    Three,
+    Four,
+    Powf(f32),
+}
+
+#[inline(always)]
+fn classify_pow(exp: f32) -> PowMode {
+    if approx_eq(exp, 1.0) {
+        PowMode::One
+    } else if approx_eq(exp, 2.0) {
+        PowMode::Two
+    } else if approx_eq(exp, 3.0) {
+        PowMode::Three
+    } else if approx_eq(exp, 4.0) {
+        PowMode::Four
+    } else {
+        PowMode::Powf(exp)
+    }
+}
+
+#[inline(always)]
+fn pow_with_mode(mode: PowMode, v: f32) -> f32 {
+    match mode {
+        PowMode::One => v,
+        PowMode::Two => v * v,
+        PowMode::Three => v * v * v,
+        PowMode::Four => {
+            let s = v * v;
+            s * s
+        },
+        PowMode::Powf(e) => v.powf(e),
+    }
+}
+
 pub fn step_simd(
     system: &mut ParticleSystem,
     dt: f32,
@@ -667,6 +702,14 @@ pub fn step_simd(
     let inv_a = 1.0 / a;
     let inv_b = 1.0 / b;
     let eps2 = epsilon * epsilon;
+
+    let mode_n = classify_pow(n_exp);
+    let mode_n_minus1 = classify_pow(n_exp - 1.0);
+    let mode_m = classify_pow(m_exp);
+    let mode_m_minus1 = classify_pow(m_exp - 1.0);
+
+    let n_mul = n_exp * inv_a;
+    let m_mul = m_exp * inv_b;
 
     let n = system.len();
 
@@ -693,7 +736,9 @@ pub fn step_simd(
 
                 let xna = pred_x.abs() * inv_a;
                 let ynb = pred_y.abs() * inv_b;
-                let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
+                let val = pow_with_mode(mode_n, xna)
+                    + pow_with_mode(mode_m, ynb)
+                    - 1.0;
 
                 if val <= 0.0 {
                     system.x[i + j] = pred_x;
@@ -704,11 +749,11 @@ pub fn step_simd(
                 let sign_x = pred_x.signum();
                 let sign_y = pred_y.signum();
 
-                let xpow = pow_fast(pred_x.abs() * inv_a, n_exp - 1.0);
-                let ypow = pow_fast(pred_y.abs() * inv_b, m_exp - 1.0);
+                let xpow = pow_with_mode(mode_n_minus1, pred_x.abs() * inv_a);
+                let ypow = pow_with_mode(mode_m_minus1, pred_y.abs() * inv_b);
 
-                let df_dx = n_exp * inv_a * xpow * sign_x;
-                let df_dy = m_exp * inv_b * ypow * sign_y;
+                let df_dx = n_mul * xpow * sign_x;
+                let df_dy = m_mul * ypow * sign_y;
                 let len2 = df_dx * df_dx + df_dy * df_dy;
 
                 if len2 <= eps2 || len2 == 0.0 {
@@ -757,7 +802,9 @@ pub fn step_simd(
                     let pred_y = yj + vyj * dt;
                     let xna = pred_x.abs() * inv_a;
                     let ynb = pred_y.abs() * inv_b;
-                    let val = pow_fast(xna, n_exp) + pow_fast(ynb, m_exp) - 1.0;
+                    let val = pow_with_mode(mode_n, xna)
+                        + pow_with_mode(mode_m, ynb)
+                        - 1.0;
 
                     if val <= 0.0 {
                         *x_ptr.add(j) = pred_x;
@@ -768,11 +815,13 @@ pub fn step_simd(
                     let sign_x = pred_x.signum();
                     let sign_y = pred_y.signum();
 
-                    let xpow = pow_fast(pred_x.abs() * inv_a, n_exp - 1.0);
-                    let ypow = pow_fast(pred_y.abs() * inv_b, m_exp - 1.0);
+                    let xpow =
+                        pow_with_mode(mode_n_minus1, pred_x.abs() * inv_a);
+                    let ypow =
+                        pow_with_mode(mode_m_minus1, pred_y.abs() * inv_b);
 
-                    let df_dx = n_exp * inv_a * xpow * sign_x;
-                    let df_dy = m_exp * inv_b * ypow * sign_y;
+                    let df_dx = n_mul * xpow * sign_x;
+                    let df_dy = m_mul * ypow * sign_y;
                     let len2 = df_dx * df_dx + df_dy * df_dy;
 
                     if len2 <= eps2 || len2 == 0.0 {
