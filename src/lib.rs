@@ -34,20 +34,20 @@ use serde_json::{
 #[global_allocator]
 static GLOBAL_ALLOC: MiMalloc = MiMalloc; /* Do not change this line */
 
-pub const A: f32 = 1.0;
-pub const B: f32 = 1.0;
-pub const N_EXP: f32 = 2.0;
-pub const M_EXP: f32 = 2.0;
+pub const A: f32 = 2.0;
+pub const B: f32 = 3.0;
+pub const N_EXP: f32 = 3.0;
+pub const M_EXP: f32 = 4.0;
 pub const DT: f32 = 0.0001;
 pub const EPSILON: f32 = 1e-8;
 pub const CEN_X: f32 = 0.1;
-pub const CEN_Y: f32 = -0.1;
+pub const CEN_Y: f32 = 1.5;
 pub const RADIUS: f32 = 0.1;
 pub const VX0: f32 = 1.0;
 pub const VY0: f32 = 0.0;
-pub const N_PARTICLES: u64 = 1000;
+pub const N_PARTICLES: u64 = 500;
 pub const FPS: u64 = 60;
-pub const DURATION_S: u64 = 10;
+pub const DURATION_S: u64 = 60;
 pub const STEPS_PER_FRAME: u64 = 300;
 pub const RES: u32 = 932;
 pub const DPI: u32 = 300;
@@ -1215,8 +1215,7 @@ pub fn run_frame_generation(
 
     spinner.set_style(
         ProgressStyle::default_spinner()
-            .template("{prefix} {spinner} {msg}")
-            .unwrap(),
+            .template("{prefix} {spinner} {msg}")?,
     );
 
     spinner.set_prefix("Generating video");
@@ -1311,8 +1310,7 @@ pub fn generate_video(
 
     spinner.set_style(
         ProgressStyle::default_spinner()
-            .template("{prefix} {spinner} {msg}")
-            .unwrap(),
+            .template("{prefix} {spinner} {msg}")?,
     );
 
     spinner.set_prefix("Generating video");
@@ -1350,8 +1348,7 @@ pub fn generate_video(
 
     final_pb.set_style(
         ProgressStyle::default_bar()
-            .template("{prefix} {bar:40.green/white} {pos:>7}/{len:7} {percent:>3}% ({elapsed})")
-            .unwrap()
+            .template("{prefix} {bar:40.green/white} {pos:>7}/{len:7} {percent:>3}% ({elapsed})")?
             .progress_chars("=>-"),
     );
 
