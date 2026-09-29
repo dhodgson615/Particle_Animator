@@ -283,7 +283,7 @@ fn bench_manual_report(c: &mut Criterion) {
                             black_box(pow_fast(1.2345f32, exp));
                         }
 
-                        let duration = start.elapsed();
+                        let duration: Duration = start.elapsed();
                         let secs = duration.as_secs_f64();
                         samples.push(secs);
 
