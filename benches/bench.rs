@@ -502,7 +502,7 @@ fn bench_manual_report(c: &mut Criterion) {
             }
 
             {
-                let case = "bresenham_points_manual_1000";
+                let case: &str = "bresenham_points_manual_1000";
                 let mut samples = Vec::with_capacity(runs);
 
                 for _ in 0..warmup {
