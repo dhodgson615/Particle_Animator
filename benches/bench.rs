@@ -579,7 +579,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 let case: &str = "render_manual_128";
                 let mut samples: Vec<f64> = Vec::with_capacity(runs);
 
-                let pool = Arc::new(
+                let pool: Arc<ThreadPool> = Arc::new(
                     ThreadPoolBuilder::new().num_threads(2).build().unwrap(),
                 );
 
