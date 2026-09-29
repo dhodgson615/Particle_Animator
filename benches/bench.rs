@@ -203,7 +203,7 @@ fn stats_from_samples(samples: &[f64]) -> (f64, f64, f64, f64, f64) {
         return (0.0, 0.0, 0.0, 0.0, 0.0);
     }
 
-    let mut s = samples.to_vec();
+    let mut s: Vec<f64> = samples.to_vec();
     s.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let min = s.first().cloned().unwrap();
     let max = s.last().cloned().unwrap();
