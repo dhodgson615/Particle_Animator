@@ -265,7 +265,7 @@ fn bench_manual_report(c: &mut Criterion) {
             write_csv_header();
 
             {
-                let case_prefix = "pow_fast_manual";
+                let case_prefix: &str = "pow_fast_manual";
 
                 for &exp in &[1.0f32, 2.0f32, 3.0f32, 4.0f32, E] {
                     let mut samples = Vec::with_capacity(runs);
