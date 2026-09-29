@@ -370,7 +370,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 }
 
                 for run_idx in 0..runs {
-                    let start = Instant::now();
+                    let start: Instant = Instant::now();
 
                     let _ = init_cluster(
                         4096u64, 0.1f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32,
