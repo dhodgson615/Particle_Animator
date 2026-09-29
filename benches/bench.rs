@@ -448,7 +448,8 @@ fn bench_manual_report(c: &mut Criterion) {
                     histogram_edges(1.0f32, 1.0f32, 128, 1.25f32);
 
                 let out: Vec<f32> = vec![0f32; 128 * 128];
-                let pool =
+
+                let pool: ThreadPool =
                     ThreadPoolBuilder::new().num_threads(1).build().unwrap();
 
                 for _ in 0..warmup {
