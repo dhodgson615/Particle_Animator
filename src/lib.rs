@@ -1624,6 +1624,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .par_iter()
         .filter_map(|entry| {
             let path: PathBuf = entry.path();
+
             if path.extension().map_or(false, |ext| ext == "png") {
                 match entry.metadata() {
                     Ok(m) => Some((1u64, m.len())),
