@@ -517,7 +517,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 }
 
                 for run_idx in 0..runs {
-                    let start = Instant::now();
+                    let start: Instant = Instant::now();
 
                     for i in 0..1000 {
                         black_box(bresenham_points(
