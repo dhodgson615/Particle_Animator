@@ -453,7 +453,7 @@ fn bench_manual_report(c: &mut Criterion) {
                     ThreadPoolBuilder::new().num_threads(1).build().unwrap();
 
                 for _ in 0..warmup {
-                    let system_copy = ParticleSystem {
+                    let system_copy: ParticleSystem = ParticleSystem {
                         x:  sys.x.clone(),
                         y:  sys.y.clone(),
                         vx: sys.vx.clone(),
