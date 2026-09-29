@@ -598,7 +598,7 @@ fn bench_manual_report(c: &mut Criterion) {
                         &bx, &by, &x_edges, &y_edges, out_px, 128usize,
                     ));
 
-                let pixel_bin_map =
+                let pixel_bin_map: Arc<Vec<usize>> =
                     Arc::new(precompute_pixel_bin_map(out_px, 128usize));
 
                 let thickness_offsets =
