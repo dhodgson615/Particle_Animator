@@ -390,7 +390,7 @@ fn bench_manual_report(c: &mut Criterion) {
 
             {
                 let case: &str = "step_simd_manual_2048";
-                let mut samples = Vec::with_capacity(runs);
+                let mut samples: Vec<f64> = Vec::with_capacity(runs);
 
                 let src = init_cluster(
                     2048u64, 0.1f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32,
