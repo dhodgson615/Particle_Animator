@@ -12,12 +12,13 @@ use criterion::{
     measurement::WallTime,
 };
 use particleanimatorrust::{
-    BOUNDARY_THICKNESS, ParticleSystem, bresenham_points, build_palette,
-    compute_histogram, compute_out_px, histogram_edges, init_cluster, pow_fast,
-    precompute_boundary_pixels, precompute_pixel_bin_map,
-    precompute_thickness_offsets, render, shape_boundary, step_simd,
+    BOUNDARY_THICKNESS, ParticleSystem, Vector3D, bresenham_points,
+    build_palette, compute_histogram, compute_out_px, histogram_edges,
+    init_cluster, pow_fast, precompute_boundary_pixels,
+    precompute_pixel_bin_map, precompute_thickness_offsets, render,
+    shape_boundary, step_simd,
 };
-use rayon::ThreadPoolBuilder;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 
 fn bench_pow_fast(c: &mut Criterion) {
     let mut g: BenchmarkGroup<WallTime> = c.benchmark_group("pow_fast");
