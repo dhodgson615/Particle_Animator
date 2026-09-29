@@ -137,7 +137,9 @@ fn bench_bresenham_points(c: &mut Criterion) {
 }
 
 fn bench_precompute_boundary_pixels(c: &mut Criterion) {
-    let (bx, by) = shape_boundary(1.0f32, 1.0f32, 2.0f32, 2.0f32, 1000usize);
+    let (bx, by): (Vec<f32>, Vec<f32>) =
+        shape_boundary(1.0f32, 1.0f32, 2.0f32, 2.0f32, 1000usize);
+
     let (x_edges, y_edges) = histogram_edges(1.0f32, 1.0f32, 256, 1.25f32);
     let out_px = compute_out_px(100);
 
