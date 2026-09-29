@@ -259,7 +259,7 @@ fn append_csv_line(
 fn bench_manual_report(c: &mut Criterion) {
     c.bench_function("manual_verbose_report", |b| {
         b.iter_custom(|_iters| {
-            let warmup = 5usize;
+            let warmup: usize = 5usize;
             let runs = 30usize;
 
             write_csv_header();
