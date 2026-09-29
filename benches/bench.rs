@@ -418,7 +418,7 @@ fn bench_manual_report(c: &mut Criterion) {
                         vy: src.vy.clone(),
                     };
 
-                    let start = Instant::now();
+                    let start: Instant = Instant::now();
 
                     step_simd(
                         &mut sys, 0.0001f32, 1e-8f32, 1.0f32, 1.0f32, 2.0f32,
