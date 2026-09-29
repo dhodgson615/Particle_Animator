@@ -226,7 +226,7 @@ fn stats_from_samples(samples: &[f64]) -> (f64, f64, f64, f64, f64) {
 fn write_csv_header() {
     let _ = create_dir_all("bench");
 
-    let mut f = OpenOptions::new()
+    let mut f: File = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
