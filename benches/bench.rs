@@ -173,7 +173,9 @@ fn bench_render_small(c: &mut Criterion) {
             &bx, &by, &x_edges, &y_edges, out_px, 128usize,
         ));
 
-    let pixel_bin_map = Arc::new(precompute_pixel_bin_map(out_px, 128usize));
+    let pixel_bin_map: Arc<Vec<usize>> =
+        Arc::new(precompute_pixel_bin_map(out_px, 128usize));
+
     let thickness_offsets =
         Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
 
