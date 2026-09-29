@@ -158,7 +158,7 @@ fn bench_render_small(c: &mut Criterion) {
     let pool: Arc<ThreadPool> =
         Arc::new(ThreadPoolBuilder::new().num_threads(2).build().unwrap());
 
-    let palette = Arc::new(build_palette());
+    let palette: Arc<Vec<Vector3D<u8>>> = Arc::new(build_palette());
     let (bx, by) = shape_boundary(1.0f32, 1.0f32, 2.0f32, 2.0f32, 500usize);
     let (x_edges, y_edges) = histogram_edges(1.0f32, 1.0f32, 128, 1.25f32);
     let out_px = compute_out_px(100);
