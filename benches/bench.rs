@@ -440,7 +440,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 let case: &str = "compute_histogram_manual_128";
                 let mut samples: Vec<f64> = Vec::with_capacity(runs);
 
-                let sys = init_cluster(
+                let sys: ParticleSystem = init_cluster(
                     4096u64, 0.1f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32,
                 );
 
