@@ -631,7 +631,7 @@ fn bench_manual_report(c: &mut Criterion) {
                         &thickness_offsets,
                     );
 
-                    let secs = start.elapsed().as_secs_f64();
+                    let secs: f64 = start.elapsed().as_secs_f64();
                     samples.push(secs);
                     println!("{},run={} -> {:.6}s", case, run_idx + 1, secs);
                 }
