@@ -65,7 +65,8 @@ fn bench_init_cluster(c: &mut Criterion) {
 }
 
 fn bench_step_simd_small(c: &mut Criterion) {
-    let src = init_cluster(2048u64, 0.1f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32);
+    let src: ParticleSystem =
+        init_cluster(2048u64, 0.1f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32);
 
     c.bench_function("step_simd_2048_one_step", |b| {
         b.iter(|| {
