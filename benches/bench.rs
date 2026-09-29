@@ -277,7 +277,7 @@ fn bench_manual_report(c: &mut Criterion) {
                     }
 
                     for run_idx in 0..runs {
-                        let start = Instant::now();
+                        let start: Instant = Instant::now();
 
                         for _ in 0..10000 {
                             black_box(pow_fast(1.2345f32, exp));
