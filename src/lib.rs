@@ -1689,6 +1689,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
 
     println!("Video saved to `mp4/{}`", index);
+
     println!(
         "Total elapsed time: {:.2}s",
         program_start.elapsed().as_secs_f64()
