@@ -316,7 +316,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 }
 
                 for run_idx in 0..runs {
-                    let start = Instant::now();
+                    let start: Instant = Instant::now();
                     let _ = build_palette();
                     let secs = start.elapsed().as_secs_f64();
 
