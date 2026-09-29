@@ -219,7 +219,7 @@ fn stats_from_samples(samples: &[f64]) -> (f64, f64, f64, f64, f64) {
     let var: f64 = s.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>()
         / (s.len() as f64);
 
-    let std = var.sqrt();
+    let std: f64 = var.sqrt();
     (min, median, mean, max, std)
 }
 
