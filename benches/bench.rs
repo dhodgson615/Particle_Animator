@@ -411,7 +411,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 }
 
                 for run_idx in 0..runs {
-                    let mut sys = ParticleSystem {
+                    let mut sys: ParticleSystem = ParticleSystem {
                         x:  src.x.clone(),
                         y:  src.y.clone(),
                         vx: src.vx.clone(),
