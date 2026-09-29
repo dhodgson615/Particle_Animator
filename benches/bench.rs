@@ -214,7 +214,7 @@ fn stats_from_samples(samples: &[f64]) -> (f64, f64, f64, f64, f64) {
         (s[s.len() / 2 - 1] + s[s.len() / 2]) / 2.0
     };
 
-    let mean = s.iter().sum::<f64>() / (s.len() as f64);
+    let mean: f64 = s.iter().sum::<f64>() / (s.len() as f64);
     let var = s.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>()
         / (s.len() as f64);
     let std = var.sqrt();
