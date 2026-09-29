@@ -583,7 +583,7 @@ fn bench_manual_report(c: &mut Criterion) {
                     ThreadPoolBuilder::new().num_threads(2).build().unwrap(),
                 );
 
-                let palette = Arc::new(build_palette());
+                let palette: Arc<Vec<Vector3D<u8>>> = Arc::new(build_palette());
 
                 let (bx, by) =
                     shape_boundary(1.0f32, 1.0f32, 2.0f32, 2.0f32, 500usize);
