@@ -1,6 +1,6 @@
 .DS_Store
 .idea/
-mp4/
-target/
-src/build_constants.rs
 Cargo.lock
+mp4/
+src/build_constants.rs
+target/
