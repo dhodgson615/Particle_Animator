@@ -576,7 +576,7 @@ fn bench_manual_report(c: &mut Criterion) {
             }
 
             {
-                let case = "render_manual_128";
+                let case: &str = "render_manual_128";
                 let mut samples = Vec::with_capacity(runs);
 
                 let pool = Arc::new(
