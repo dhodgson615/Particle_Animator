@@ -184,7 +184,7 @@ fn bench_render_small(c: &mut Criterion) {
 
     c.bench_function("render_128", |b| {
         b.iter(|| {
-            let img = render(
+            let img: RgbImage = render(
                 &h_log_flat,
                 &boundary_pixels,
                 &palette,
