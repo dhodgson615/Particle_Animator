@@ -540,7 +540,7 @@ fn bench_manual_report(c: &mut Criterion) {
             }
 
             {
-                let case = "precompute_boundary_pixels_manual_256";
+                let case: &str = "precompute_boundary_pixels_manual_256";
                 let mut samples = Vec::with_capacity(runs);
 
                 let (bx, by) =
