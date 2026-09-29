@@ -284,7 +284,7 @@ fn bench_manual_report(c: &mut Criterion) {
                         }
 
                         let duration: Duration = start.elapsed();
-                        let secs = duration.as_secs_f64();
+                        let secs: f64 = duration.as_secs_f64();
                         samples.push(secs);
 
                         println!(
