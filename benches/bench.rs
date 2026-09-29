@@ -543,7 +543,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 let case: &str = "precompute_boundary_pixels_manual_256";
                 let mut samples: Vec<f64> = Vec::with_capacity(runs);
 
-                let (bx, by) =
+                let (bx, by): (Vec<f32>, Vec<f32>) =
                     shape_boundary(1.0f32, 1.0f32, 2.0f32, 2.0f32, 1000usize);
 
                 let (x_edges, y_edges) =
