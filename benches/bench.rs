@@ -155,7 +155,7 @@ fn bench_precompute_boundary_pixels(c: &mut Criterion) {
 }
 
 fn bench_render_small(c: &mut Criterion) {
-    let pool =
+    let pool: Arc<ThreadPool> =
         Arc::new(ThreadPoolBuilder::new().num_threads(2).build().unwrap());
 
     let palette = Arc::new(build_palette());
