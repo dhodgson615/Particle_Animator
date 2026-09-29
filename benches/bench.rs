@@ -549,7 +549,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 let (x_edges, y_edges): (Vec<f32>, Vec<f32>) =
                     histogram_edges(1.0f32, 1.0f32, 256, 1.25f32);
 
-                let out_px = compute_out_px(100);
+                let out_px: (u32, u32) = compute_out_px(100);
 
                 for _ in 0..warmup {
                     let _ = precompute_boundary_pixels(
