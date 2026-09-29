@@ -98,7 +98,7 @@ fn bench_compute_histogram(c: &mut Criterion) {
     let (x_edges, y_edges): (Vec<f32>, Vec<f32>) =
         histogram_edges(1.0f32, 1.0f32, 128, 1.25f32);
 
-    let out = vec![0f32; 128 * 128];
+    let out: Vec<f32> = vec![0f32; 128 * 128];
     let pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
 
     c.bench_function("compute_histogram_128", |b| {
