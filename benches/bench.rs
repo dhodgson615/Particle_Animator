@@ -241,7 +241,7 @@ fn append_csv_line(
     run_count: usize,
     stats: (f64, f64, f64, f64, f64),
 ) {
-    let mut f = OpenOptions::new()
+    let mut f: File = OpenOptions::new()
         .create(true)
         .append(true)
         .open("bench/bench_report.csv")
