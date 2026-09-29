@@ -1351,7 +1351,6 @@ pub fn generate_video(
     }
 
     let status: ExitStatus = child.wait()?;
-
     spinner.finish_and_clear();
 
     let final_progress_bar: ProgressBar = ProgressBar::new(total_frames);
