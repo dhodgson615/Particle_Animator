@@ -206,7 +206,7 @@ fn stats_from_samples(samples: &[f64]) -> (f64, f64, f64, f64, f64) {
     let mut s: Vec<f64> = samples.to_vec();
     s.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let min: f64 = s.first().cloned().unwrap();
-    let max = s.last().cloned().unwrap();
+    let max: f64 = s.last().cloned().unwrap();
 
     let median = if s.len() % 2 == 1 {
         s[s.len() / 2]
