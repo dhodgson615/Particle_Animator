@@ -533,7 +533,9 @@ fn bench_manual_report(c: &mut Criterion) {
                     println!("{},run={} -> {:.6}s", case, run_idx + 1, secs);
                 }
 
-                let stats = stats_from_samples(&samples);
+                let stats: (f64, f64, f64, f64, f64) =
+                    stats_from_samples(&samples);
+
                 append_csv_line(case, runs, stats);
             }
 
