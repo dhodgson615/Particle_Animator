@@ -478,7 +478,7 @@ fn bench_manual_report(c: &mut Criterion) {
                         vy: sys.vy.clone(),
                     };
 
-                    let start = Instant::now();
+                    let start: Instant = Instant::now();
 
                     compute_histogram(
                         &system_copy,
