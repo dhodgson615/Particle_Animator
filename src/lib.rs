@@ -1709,7 +1709,6 @@ pub fn render(
 ) -> RgbImage {
     let (width, height): (u32, u32) = out_px;
     let w: usize = width as usize;
-
     let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = RgbImage::new(width, height);
 
     let palette_len: usize = palette.len();
