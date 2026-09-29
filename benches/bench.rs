@@ -308,7 +308,7 @@ fn bench_manual_report(c: &mut Criterion) {
             }
 
             {
-                let case = "build_palette_manual";
+                let case: &str = "build_palette_manual";
                 let mut samples = Vec::with_capacity(runs);
 
                 for _ in 0..warmup {
