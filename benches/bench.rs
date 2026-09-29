@@ -332,7 +332,7 @@ fn bench_manual_report(c: &mut Criterion) {
 
             {
                 let case: &str = "shape_boundary_manual";
-                let mut samples = Vec::with_capacity(runs);
+                let mut samples: Vec<f64> = Vec::with_capacity(runs);
 
                 for _ in 0..warmup {
                     let _ = shape_boundary(
