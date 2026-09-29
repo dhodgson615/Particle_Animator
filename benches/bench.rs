@@ -604,7 +604,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 let thickness_offsets: Arc<Vec<(i64, i64)>> =
                     Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
 
-                let h_log_flat = vec![1.0f32; 128 * 128];
+                let h_log_flat: Vec<f32> = vec![1.0f32; 128 * 128];
 
                 for _ in 0..warmup {
                     let _ = render(
