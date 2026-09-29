@@ -360,7 +360,7 @@ fn bench_manual_report(c: &mut Criterion) {
             }
 
             {
-                let case = "init_cluster_manual";
+                let case: &str = "init_cluster_manual";
                 let mut samples = Vec::with_capacity(runs);
 
                 for _ in 0..warmup {
