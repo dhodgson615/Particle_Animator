@@ -92,8 +92,12 @@ fn bench_step_simd_small(c: &mut Criterion) {
 }
 
 fn bench_compute_histogram(c: &mut Criterion) {
-    let sys: ParticleSystem = init_cluster(4096u64, 0.1f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32);
-    let (x_edges, y_edges) = histogram_edges(1.0f32, 1.0f32, 128, 1.25f32);
+    let sys: ParticleSystem =
+        init_cluster(4096u64, 0.1f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32);
+
+    let (x_edges, y_edges): (Vec<f32>, Vec<f32>) =
+        histogram_edges(1.0f32, 1.0f32, 128, 1.25f32);
+
     let out = vec![0f32; 128 * 128];
     let pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
 
