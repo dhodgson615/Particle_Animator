@@ -140,7 +140,9 @@ fn bench_precompute_boundary_pixels(c: &mut Criterion) {
     let (bx, by): (Vec<f32>, Vec<f32>) =
         shape_boundary(1.0f32, 1.0f32, 2.0f32, 2.0f32, 1000usize);
 
-    let (x_edges, y_edges) = histogram_edges(1.0f32, 1.0f32, 256, 1.25f32);
+    let (x_edges, y_edges): (Vec<f32>, Vec<f32>) =
+        histogram_edges(1.0f32, 1.0f32, 256, 1.25f32);
+
     let out_px = compute_out_px(100);
 
     c.bench_function("precompute_boundary_pixels_256", |b| {
