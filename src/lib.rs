@@ -1,25 +1,27 @@
 use std::{
-    cmp,
+    cmp::max,
     error::Error,
     f32::consts::PI,
     fs::{DirEntry, create_dir_all, read_dir, read_to_string, write},
     io::{BufRead, BufReader, Write, stdin},
     path::{Path, PathBuf},
-    process::{self, Command, Stdio},
+    process::{
+        self, Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio,
+    },
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed},
     },
-    thread::scope,
+    thread::{ScopedJoinHandle, scope},
     time::{Duration, Instant},
 };
 
+use PowMode::{Four, One, Powf, Three, Two};
 use ahash::{AHashMap, AHashSet};
 use chrono::Utc;
 use clap::Parser;
-use cmp::max;
-use crossbeam_channel::bounded;
-use image::RgbImage;
+use crossbeam_channel::{Receiver, Sender, bounded};
+use image::{ImageBuffer, Rgb, RgbImage};
 use indicatif::{ProgressBar, ProgressStyle};
 use mimalloc::MiMalloc;
 use num_cpus;
@@ -188,20 +190,20 @@ impl Vec3 {
 }
 
 pub fn rgb_from_wavelength(wl: f32, gamma: f32) -> Vec3 {
-    let (r, g, b) = if (380.0..=440.0).contains(&wl) {
-        let t = (wl - 380.0) / 60.0;
+    let (r, g, b): (f32, f32, f32) = if (380.0..=440.0).contains(&wl) {
+        let t: f32 = (wl - 380.0) / 60.0;
         ((-t + 1.0).clamp(0.0, 1.0), 0.0, 1.0)
     } else if (440.0..=490.0).contains(&wl) {
-        let t = (wl - 440.0) / 50.0;
+        let t: f32 = (wl - 440.0) / 50.0;
         (0.0, t, 1.0)
     } else if (490.0..=510.0).contains(&wl) {
-        let t = (wl - 490.0) / 20.0;
+        let t: f32 = (wl - 490.0) / 20.0;
         (0.0, 1.0, (-t + 1.0).clamp(0.0, 1.0))
     } else if (510.0..=580.0).contains(&wl) {
-        let t = (wl - 510.0) / 70.0;
+        let t: f32 = (wl - 510.0) / 70.0;
         (t, 1.0, 0.0)
     } else if (580.0..=645.0).contains(&wl) {
-        let t = (wl - 580.0) / 65.0;
+        let t: f32 = (wl - 580.0) / 65.0;
         (1.0, (-t + 1.0).clamp(0.0, 1.0), 0.0)
     } else if (645.0..=750.0).contains(&wl) {
         (1.0, 0.0, 0.0)
@@ -209,7 +211,7 @@ pub fn rgb_from_wavelength(wl: f32, gamma: f32) -> Vec3 {
         (0.0, 0.0, 0.0)
     };
 
-    let s = if wl <= 420.0 {
+    let s: f32 = if wl <= 420.0 {
         0.3 + 0.7 * (wl - 380.0) / 40.0
     } else if wl > 700.0 {
         0.3 + 0.7 * (750.0 - wl) / 50.0
@@ -225,14 +227,15 @@ pub fn rgb_from_wavelength(wl: f32, gamma: f32) -> Vec3 {
 }
 
 pub fn build_palette() -> Vec<Vector3D<u8>> {
-    let mut palette = Vec::with_capacity(PALETTE_SIZE);
+    let mut palette: Vec<[u8; 3]> = Vec::with_capacity(PALETTE_SIZE);
     palette.push([0, 0, 0]);
 
     let rest: Vec<[u8; 3]> = (1..PALETTE_SIZE)
         .into_par_iter()
         .map(|i| {
-            let wavelength = 700.0 - (700.0 - 380.0) * (i - 1) as f32 / 254.0;
-            let rgb = rgb_from_wavelength(wavelength, 0.8);
+            let wavelength: f32 =
+                700.0 - (700.0 - 380.0) * (i - 1) as f32 / 254.0;
+            let rgb: Vec3 = rgb_from_wavelength(wavelength, 0.8);
             rgb.to_rgb_u8()
         })
         .collect();
@@ -270,14 +273,13 @@ pub fn histogram_edges(
     bins: u32,
     factor: f32,
 ) -> (Vec<f32>, Vec<f32>) {
-    let x_min = -a * factor;
-    let x_max = a * factor;
-    let y_min = -b * factor;
-    let y_max = b * factor;
-
-    let bins = bins as usize;
-    let x_step = (x_max - x_min) / bins as f32;
-    let y_step = (y_max - y_min) / bins as f32;
+    let x_min: f32 = -a * factor;
+    let x_max: f32 = a * factor;
+    let y_min: f32 = -b * factor;
+    let y_max: f32 = b * factor;
+    let bins: usize = bins as usize;
+    let x_step: f32 = (x_max - x_min) / bins as f32;
+    let y_step: f32 = (y_max - y_min) / bins as f32;
 
     let x_edges: Vec<f32> =
         (0..=bins).into_par_iter().map(|i| x_min + x_step * i as f32).collect();
@@ -289,10 +291,10 @@ pub fn histogram_edges(
 }
 
 pub fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
-    let (width_px, height_px) = out_px;
-    let w = width_px as usize;
-    let h = height_px as usize;
-    let total_pixels = w.saturating_mul(h);
+    let (width_px, height_px): (u32, u32) = out_px;
+    let w: usize = width_px as usize;
+    let h: usize = height_px as usize;
+    let total_pixels: usize = w.saturating_mul(h);
 
     if total_pixels == 0 || bins == 0 {
         return Vec::new();
@@ -301,25 +303,25 @@ pub fn precompute_pixel_bin_map(out_px: (u32, u32), bins: usize) -> Vec<usize> {
     (0..total_pixels)
         .into_par_iter()
         .map(|i| {
-            let y = i / w;
-            let x = i % w;
-            let bin_y = (y * bins) / h;
-            let bin_x = (x * bins) / w;
+            let y: usize = i / w;
+            let x: usize = i % w;
+            let bin_y: usize = (y * bins) / h;
+            let bin_x: usize = (x * bins) / w;
             bin_y * bins + bin_x
         })
         .collect()
 }
 
 pub fn precompute_thickness_offsets(thickness: usize) -> Vec<(i64, i64)> {
-    let radius = thickness as i64;
-    let radius_sq = radius * radius;
+    let radius: i64 = thickness as i64;
+    let radius_sq: i64 = radius * radius;
 
     let per_row_offsets: Vec<Vec<(i64, i64)>> = (-radius..=radius)
         .into_par_iter()
         .map(|dy| {
-            let remainder = radius_sq - dy * dy;
+            let remainder: i64 = radius_sq - dy * dy;
             if remainder >= 0 {
-                let dx_limit = (remainder as f64).sqrt() as i64;
+                let dx_limit: i64 = (remainder as f64).sqrt() as i64;
                 (-dx_limit..=dx_limit)
                     .into_par_iter()
                     .map(move |dx| (dx, dy))
@@ -344,24 +346,22 @@ pub fn compute_histogram(
     pool: &ThreadPool,
     out: &mut [f32],
 ) {
-    let bins_usize = bins as usize;
-    let total_bins = bins_usize.saturating_mul(bins_usize);
+    let bins_usize: usize = bins as usize;
+    let total_bins: usize = bins_usize.saturating_mul(bins_usize);
 
     if out.len() < total_bins {
         return;
     }
 
-    let x_min = x_edges[0];
-    let x_max = *x_edges.last().unwrap_or(&x_min);
-    let y_min = y_edges[0];
-    let y_max = *y_edges.last().unwrap_or(&y_min);
-
-    let dx = (x_max - x_min) / bins as f32;
-    let dy = (y_max - y_min) / bins as f32;
-    let dx_inv = if dx != 0.0 { 1.0 / dx } else { 0.0 };
-    let dy_inv = if dy != 0.0 { 1.0 / dy } else { 0.0 };
-
-    let n = system.len();
+    let x_min: f32 = x_edges[0];
+    let x_max: f32 = *x_edges.last().unwrap_or(&x_min);
+    let y_min: f32 = y_edges[0];
+    let y_max: f32 = *y_edges.last().unwrap_or(&y_min);
+    let dx: f32 = (x_max - x_min) / bins as f32;
+    let dy: f32 = (y_max - y_min) / bins as f32;
+    let dx_inv: f32 = if dx != 0.0 { 1.0 / dx } else { 0.0 };
+    let dy_inv: f32 = if dy != 0.0 { 1.0 / dy } else { 0.0 };
+    let n: usize = system.len();
 
     let combined: Vec<u32> = pool.install(|| {
         (0..n)
@@ -371,14 +371,14 @@ pub fn compute_histogram(
                 |mut local, idx| {
                     let px = system.x[idx];
                     let py = system.y[idx];
-
-                    let ix = ((px - x_min) * dx_inv) as i32;
-                    let iy = ((py - y_min) * dy_inv) as i32;
-
-                    let bins_i = bins as i32;
+                    let ix: i32 = ((px - x_min) * dx_inv) as i32;
+                    let iy: i32 = ((py - y_min) * dy_inv) as i32;
+                    let bins_i: i32 = bins as i32;
 
                     if ix >= 0 && ix < bins_i && iy >= 0 && iy < bins_i {
-                        let id = (iy as usize) * bins_usize + (ix as usize);
+                        let id: usize =
+                            (iy as usize) * bins_usize + (ix as usize);
+
                         local[id] = local[id].wrapping_add(1);
                     }
                     local
@@ -406,13 +406,12 @@ pub fn bresenham_points(
     x1: i64,
     y1: i64,
 ) -> Vec<(i64, i64)> {
-    let delta_x = (x1 - x0).abs();
-    let step_x = if x0 < x1 { 1 } else { -1 };
-    let delta_y_neg = -(y1 - y0).abs();
-    let step_y = if y0 < y1 { 1 } else { -1 };
-
-    let mut err = delta_x + delta_y_neg;
-    let mut points = Vec::new();
+    let delta_x: i64 = (x1 - x0).abs();
+    let step_x: i64 = if x0 < x1 { 1 } else { -1 };
+    let delta_y_neg: i64 = -(y1 - y0).abs();
+    let step_y: i64 = if y0 < y1 { 1 } else { -1 };
+    let mut err: i64 = delta_x + delta_y_neg;
+    let mut points: Vec<(i64, i64)> = Vec::new();
 
     loop {
         points.push((x0, y0));
@@ -420,7 +419,7 @@ pub fn bresenham_points(
             break;
         }
 
-        let doubled_err = 2 * err;
+        let doubled_err: i64 = 2 * err;
 
         if doubled_err >= delta_y_neg {
             err += delta_y_neg;
@@ -444,33 +443,34 @@ pub fn precompute_boundary_pixels(
     out_px: (u32, u32),
     sample_n: usize,
 ) -> Vec<(i64, i64)> {
-    let (width_px, height_px) = out_px;
-    let sample_bins = sample_n.max(3);
+    let (width_px, height_px): (u32, u32) = out_px;
+    let sample_bins: usize = sample_n.max(3);
 
-    let x_span =
+    let x_span: f32 =
         (x_edges.last().cloned().unwrap_or(0.0) - x_edges[0]).abs().max(1e-6);
 
-    let y_span =
+    let y_span: f32 =
         (y_edges.last().cloned().unwrap_or(0.0) - y_edges[0]).abs().max(1e-6);
 
-    let boundary_len = bx.len().max(1);
+    let boundary_len: usize = bx.len().max(1);
 
     let sampled_pixels: Vec<(i64, i64)> = (0..sample_bins)
         .into_par_iter()
         .map(|k| {
-            let idxf =
+            let idxf: f32 =
                 (k as f32) * (boundary_len as f32) / (sample_bins as f32);
 
-            let i0 = idxf.floor() as usize % boundary_len;
-            let i1 = (i0 + 1) % boundary_len;
-            let frac = idxf - idxf.floor();
-            let bx_val = bx[i0] * (1.0 - frac) + bx[i1] * frac;
-            let by_val = by[i0] * (1.0 - frac) + by[i1] * frac;
+            let i0: usize = idxf.floor() as usize % boundary_len;
+            let i1: usize = (i0 + 1) % boundary_len;
+            let frac: f32 = idxf - idxf.floor();
+            let bx_val: f32 = bx[i0] * (1.0 - frac) + bx[i1] * frac;
+            let by_val: f32 = by[i0] * (1.0 - frac) + by[i1] * frac;
 
-            let mut x = ((bx_val - x_edges[0]) / x_span * (width_px - 1) as f32)
+            let mut x: i64 = ((bx_val - x_edges[0]) / x_span
+                * (width_px - 1) as f32)
                 .round() as i64;
 
-            let mut y = height_px as i64
+            let mut y: i64 = height_px as i64
                 - 1
                 - ((by_val - y_edges[0]) / y_span * (height_px - 1) as f32)
                     .round() as i64;
@@ -524,44 +524,45 @@ pub fn draw_boundary(
         return;
     }
 
-    let w = width as usize;
-    let h = height as usize;
-    let total = w.saturating_mul(h);
+    let w: usize = width as usize;
+    let h: usize = height as usize;
+    let total: usize = w.saturating_mul(h);
 
     let pixel_flags: Vec<AtomicU32> =
         (0..total).map(|_| AtomicU32::new(0)).collect();
 
-    let pixel_flags = Arc::new(pixel_flags);
+    let pixel_flags: Arc<Vec<AtomicU32>> = Arc::new(pixel_flags);
 
     pool.install(|| {
         bresenham_px.par_iter().for_each(|&(lx, ly)| {
-            let pixel_flags = pixel_flags.clone();
-            offsets.iter().for_each(|&(dx, dy)| {
-                let px = lx + dx;
-                let py = ly + dy;
+            let pixel_flags: Arc<Vec<AtomicU32>> = pixel_flags.clone();
+
+            for &(dx, dy) in offsets.iter() {
+                let px: i64 = lx + dx;
+                let py: i64 = ly + dy;
 
                 if px < 0 || py < 0 {
                     return;
                 }
 
-                let pxu = px as usize;
-                let pyu = py as usize;
+                let pxu: usize = px as usize;
+                let pyu: usize = py as usize;
 
                 if pxu >= w || pyu >= h {
                     return;
                 }
 
-                let idx = pyu * w + pxu;
+                let idx: usize = pyu * w + pxu;
                 pixel_flags[idx].store(1, Relaxed);
-            });
+            }
         });
 
         image.par_chunks_mut((width * 3) as usize).enumerate().for_each(
             |(y, row)| {
-                let base_row_idx = y * w;
+                let base_row_idx: usize = y * w;
 
                 for (x, pixel) in row.chunks_mut(3).enumerate() {
-                    let idx = base_row_idx + x;
+                    let idx: usize = base_row_idx + x;
 
                     if pixel_flags[idx].load(Relaxed) != 0 {
                         if pixel.len() >= 3 {
@@ -641,7 +642,7 @@ pub fn pow_fast(value: f32, exponent: f32) -> f32 {
     } else if approx_eq(exponent, 3.0) {
         value * value * value
     } else if approx_eq(exponent, 4.0) {
-        let sq = value * value;
+        let sq: f32 = value * value;
         sq * sq
     } else {
         value.powf(exponent)
@@ -660,29 +661,29 @@ enum PowMode {
 #[inline(always)]
 fn classify_pow(exp: f32) -> PowMode {
     if approx_eq(exp, 1.0) {
-        PowMode::One
+        One
     } else if approx_eq(exp, 2.0) {
-        PowMode::Two
+        Two
     } else if approx_eq(exp, 3.0) {
-        PowMode::Three
+        Three
     } else if approx_eq(exp, 4.0) {
-        PowMode::Four
+        Four
     } else {
-        PowMode::Powf(exp)
+        Powf(exp)
     }
 }
 
 #[inline(always)]
 fn pow_with_mode(mode: PowMode, v: f32) -> f32 {
     match mode {
-        PowMode::One => v,
-        PowMode::Two => v * v,
-        PowMode::Three => v * v * v,
-        PowMode::Four => {
-            let s = v * v;
+        One => v,
+        Two => v * v,
+        Three => v * v * v,
+        Four => {
+            let s: f32 = v * v;
             s * s
         },
-        PowMode::Powf(e) => v.powf(e),
+        Powf(e) => v.powf(e),
     }
 }
 
@@ -699,29 +700,26 @@ pub fn step_simd(
         return;
     }
 
-    let inv_a = 1.0 / a;
-    let inv_b = 1.0 / b;
-    let eps2 = epsilon * epsilon;
+    let inv_a: f32 = 1.0 / a;
+    let inv_b: f32 = 1.0 / b;
+    let eps2: f32 = epsilon * epsilon;
+    let mode_n: PowMode = classify_pow(n_exp);
+    let mode_n_minus1: PowMode = classify_pow(n_exp - 1.0);
+    let mode_m: PowMode = classify_pow(m_exp);
+    let mode_m_minus1: PowMode = classify_pow(m_exp - 1.0);
+    let n_mul: f32 = n_exp * inv_a;
+    let m_mul: f32 = m_exp * inv_b;
+    let n: usize = system.len();
 
-    let mode_n = classify_pow(n_exp);
-    let mode_n_minus1 = classify_pow(n_exp - 1.0);
-    let mode_m = classify_pow(m_exp);
-    let mode_m_minus1 = classify_pow(m_exp - 1.0);
-
-    let n_mul = n_exp * inv_a;
-    let m_mul = m_exp * inv_b;
-
-    let n = system.len();
-
-    let mut i = 0usize;
+    let mut i: usize = 0usize;
     while i < n {
-        let remaining = n - i;
+        let remaining: usize = n - i;
 
         if remaining >= LANES {
-            let mut pos_x_lane = [0.0f32; LANES];
-            let mut pos_y_lane = [0.0f32; LANES];
-            let mut vel_x_lane = [0.0f32; LANES];
-            let mut vel_y_lane = [0.0f32; LANES];
+            let mut pos_x_lane: [f32; 8] = [0.0f32; LANES];
+            let mut pos_y_lane: [f32; 8] = [0.0f32; LANES];
+            let mut vel_x_lane: [f32; 8] = [0.0f32; LANES];
+            let mut vel_y_lane: [f32; 8] = [0.0f32; LANES];
 
             for j in 0..LANES {
                 pos_x_lane[j] = system.x[i + j];
@@ -731,12 +729,12 @@ pub fn step_simd(
             }
 
             for j in 0..LANES {
-                let pred_x = pos_x_lane[j] + vel_x_lane[j] * dt;
-                let pred_y = pos_y_lane[j] + vel_y_lane[j] * dt;
+                let pred_x: f32 = pos_x_lane[j] + vel_x_lane[j] * dt;
+                let pred_y: f32 = pos_y_lane[j] + vel_y_lane[j] * dt;
+                let xna: f32 = pred_x.abs() * inv_a;
+                let ynb: f32 = pred_y.abs() * inv_b;
 
-                let xna = pred_x.abs() * inv_a;
-                let ynb = pred_y.abs() * inv_b;
-                let val = pow_with_mode(mode_n, xna)
+                let val: f32 = pow_with_mode(mode_n, xna)
                     + pow_with_mode(mode_m, ynb)
                     - 1.0;
 
@@ -746,15 +744,18 @@ pub fn step_simd(
                     continue;
                 }
 
-                let sign_x = pred_x.signum();
-                let sign_y = pred_y.signum();
+                let sign_x: f32 = pred_x.signum();
+                let sign_y: f32 = pred_y.signum();
 
-                let xpow = pow_with_mode(mode_n_minus1, pred_x.abs() * inv_a);
-                let ypow = pow_with_mode(mode_m_minus1, pred_y.abs() * inv_b);
+                let x_pow: f32 =
+                    pow_with_mode(mode_n_minus1, pred_x.abs() * inv_a);
 
-                let df_dx = n_mul * xpow * sign_x;
-                let df_dy = m_mul * ypow * sign_y;
-                let len2 = df_dx * df_dx + df_dy * df_dy;
+                let y_pow: f32 =
+                    pow_with_mode(mode_m_minus1, pred_y.abs() * inv_b);
+
+                let df_dx: f32 = n_mul * x_pow * sign_x;
+                let df_dy: f32 = m_mul * y_pow * sign_y;
+                let len2: f32 = df_dx * df_dx + df_dy * df_dy;
 
                 if len2 <= eps2 || len2 == 0.0 {
                     system.x[i + j] = pred_x;
@@ -762,17 +763,14 @@ pub fn step_simd(
                     continue;
                 }
 
-                let inv_len = 1.0 / len2.sqrt();
-                let nx = df_dx * inv_len;
-                let ny = df_dy * inv_len;
-
-                let vx = vel_x_lane[j];
-                let vy = vel_y_lane[j];
-                let vxn = vx * nx + vy * ny;
-
-                let rx = vx - 2.0 * vxn * nx;
-                let ry = vy - 2.0 * vxn * ny;
-
+                let inv_len: f32 = 1.0 / len2.sqrt();
+                let nx: f32 = df_dx * inv_len;
+                let ny: f32 = df_dy * inv_len;
+                let vx: f32 = vel_x_lane[j];
+                let vy: f32 = vel_y_lane[j];
+                let vxn: f32 = vx * nx + vy * ny;
+                let rx: f32 = vx - 2.0 * vxn * nx;
+                let ry: f32 = vy - 2.0 * vxn * ny;
                 system.vx[i + j] = rx;
                 system.vy[i + j] = ry;
                 system.x[i + j] = pred_x - rx * epsilon;
@@ -781,28 +779,35 @@ pub fn step_simd(
 
             i += LANES;
         } else {
-            let x_atomic = Arc::new(AtomicPtr::new(system.x.as_mut_ptr()));
-            let y_atomic = Arc::new(AtomicPtr::new(system.y.as_mut_ptr()));
-            let vx_atomic = Arc::new(AtomicPtr::new(system.vx.as_mut_ptr()));
-            let vy_atomic = Arc::new(AtomicPtr::new(system.vy.as_mut_ptr()));
+            let x_atomic: Arc<AtomicPtr<f32>> =
+                Arc::new(AtomicPtr::new(system.x.as_mut_ptr()));
+
+            let y_atomic: Arc<AtomicPtr<f32>> =
+                Arc::new(AtomicPtr::new(system.y.as_mut_ptr()));
+
+            let vx_atomic: Arc<AtomicPtr<f32>> =
+                Arc::new(AtomicPtr::new(system.vx.as_mut_ptr()));
+
+            let vy_atomic: Arc<AtomicPtr<f32>> =
+                Arc::new(AtomicPtr::new(system.vy.as_mut_ptr()));
 
             (i..n).into_par_iter().for_each(|j| {
-                let x_ptr = x_atomic.load(Relaxed);
-                let y_ptr = y_atomic.load(Relaxed);
-                let vx_ptr = vx_atomic.load(Relaxed);
-                let vy_ptr = vy_atomic.load(Relaxed);
+                let x_ptr: *mut f32 = x_atomic.load(Relaxed);
+                let y_ptr: *mut f32 = y_atomic.load(Relaxed);
+                let vx_ptr: *mut f32 = vx_atomic.load(Relaxed);
+                let vy_ptr: *mut f32 = vy_atomic.load(Relaxed);
 
                 unsafe {
-                    let xj = *x_ptr.add(j);
-                    let yj = *y_ptr.add(j);
-                    let vxj = *vx_ptr.add(j);
-                    let vyj = *vy_ptr.add(j);
+                    let xj: f32 = *x_ptr.add(j);
+                    let yj: f32 = *y_ptr.add(j);
+                    let vxj: f32 = *vx_ptr.add(j);
+                    let vyj: f32 = *vy_ptr.add(j);
+                    let pred_x: f32 = xj + vxj * dt;
+                    let pred_y: f32 = yj + vyj * dt;
+                    let xna: f32 = pred_x.abs() * inv_a;
+                    let ynb: f32 = pred_y.abs() * inv_b;
 
-                    let pred_x = xj + vxj * dt;
-                    let pred_y = yj + vyj * dt;
-                    let xna = pred_x.abs() * inv_a;
-                    let ynb = pred_y.abs() * inv_b;
-                    let val = pow_with_mode(mode_n, xna)
+                    let val: f32 = pow_with_mode(mode_n, xna)
                         + pow_with_mode(mode_m, ynb)
                         - 1.0;
 
@@ -812,17 +817,18 @@ pub fn step_simd(
                         return;
                     }
 
-                    let sign_x = pred_x.signum();
-                    let sign_y = pred_y.signum();
+                    let sign_x: f32 = pred_x.signum();
+                    let sign_y: f32 = pred_y.signum();
 
-                    let xpow =
+                    let x_pow: f32 =
                         pow_with_mode(mode_n_minus1, pred_x.abs() * inv_a);
-                    let ypow =
+
+                    let y_pow: f32 =
                         pow_with_mode(mode_m_minus1, pred_y.abs() * inv_b);
 
-                    let df_dx = n_mul * xpow * sign_x;
-                    let df_dy = m_mul * ypow * sign_y;
-                    let len2 = df_dx * df_dx + df_dy * df_dy;
+                    let df_dx: f32 = n_mul * x_pow * sign_x;
+                    let df_dy: f32 = m_mul * y_pow * sign_y;
+                    let len2: f32 = df_dx * df_dx + df_dy * df_dy;
 
                     if len2 <= eps2 || len2 == 0.0 {
                         *x_ptr.add(j) = pred_x;
@@ -830,13 +836,13 @@ pub fn step_simd(
                         return;
                     }
 
-                    let inv_len = 1.0 / len2.sqrt();
-                    let nx = df_dx * inv_len;
-                    let ny = df_dy * inv_len;
+                    let inv_len: f32 = 1.0 / len2.sqrt();
+                    let nx: f32 = df_dx * inv_len;
+                    let ny: f32 = df_dy * inv_len;
 
-                    let vxn = vxj * nx + vyj * ny;
-                    let rx = vxj - 2.0 * vxn * nx;
-                    let ry = vyj - 2.0 * vxn * ny;
+                    let vxn: f32 = vxj * nx + vyj * ny;
+                    let rx: f32 = vxj - 2.0 * vxn * nx;
+                    let ry: f32 = vyj - 2.0 * vxn * ny;
 
                     *vx_ptr.add(j) = rx;
                     *vy_ptr.add(j) = ry;
@@ -871,62 +877,59 @@ pub fn init_cluster(
     vx0: f32,
     vy0: f32,
 ) -> ParticleSystem {
-    let n_usize = n as usize;
-    let mut system = ParticleSystem::with_capacity(n_usize);
+    let n_usize: usize = n as usize;
+    let mut system: ParticleSystem = ParticleSystem::with_capacity(n_usize);
     system.resize(n_usize);
 
     pub fn splitmix64(mut x: u64) -> u64 {
         x = x.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = x;
+        let mut z: u64 = x;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
         z ^ (z >> 31)
     }
 
-    let num_threads = num_cpus::get().min(n_usize.max(1));
-    let chunk = (n_usize + num_threads - 1) / num_threads;
-
-    let x_addr = system.x.as_mut_ptr() as usize;
-    let y_addr = system.y.as_mut_ptr() as usize;
-    let vx_addr = system.vx.as_mut_ptr() as usize;
-    let vy_addr = system.vy.as_mut_ptr() as usize;
+    let n_threads: usize = num_cpus::get().min(n_usize.max(1));
+    let chunk: usize = (n_usize + n_threads - 1) / n_threads;
+    let x_addr: usize = system.x.as_mut_ptr() as usize;
+    let y_addr: usize = system.y.as_mut_ptr() as usize;
+    let vx_addr: usize = system.vx.as_mut_ptr() as usize;
+    let vy_addr: usize = system.vy.as_mut_ptr() as usize;
 
     scope(|s| {
-        for t in 0..num_threads {
-            let start = t * chunk;
+        for t in 0..n_threads {
+            let start: usize = t * chunk;
 
             if start >= n_usize {
                 break;
             }
 
-            let end = (start + chunk).min(n_usize);
-            let len = end - start;
-            let seed0 = SEED_MULTIPLIER ^ (start as u64);
+            let end: usize = (start + chunk).min(n_usize);
+            let len: usize = end - start;
+            let seed0: u64 = SEED_MULTIPLIER ^ (start as u64);
 
             s.spawn(move || {
-                let x_ptr = x_addr as *mut f32;
-                let y_ptr = y_addr as *mut f32;
-                let vx_ptr = vx_addr as *mut f32;
-                let vy_ptr = vy_addr as *mut f32;
+                let x_ptr: *mut f32 = x_addr as *mut f32;
+                let y_ptr: *mut f32 = y_addr as *mut f32;
+                let vx_ptr: *mut f32 = vx_addr as *mut f32;
+                let vy_ptr: *mut f32 = vy_addr as *mut f32;
+                let mut seed: u64 = seed0;
+                let mut i: usize = 0usize;
 
-                let mut seed = seed0;
-
-                let mut i = 0usize;
                 while i + 4 <= len {
                     for k in 0..4 {
-                        let s1 = splitmix64(seed);
+                        let s1: u64 = splitmix64(seed);
                         seed = s1;
-                        let s2 = splitmix64(seed);
+                        let s2: u64 = splitmix64(seed);
                         seed = s2;
 
-                        let u1 = (s1 as f64) / ((u64::MAX as f64) + 1.0);
-                        let u2 = (s2 as f64) / ((u64::MAX as f64) + 1.0);
-
-                        let r = radius * (u1.sqrt() as f32);
-                        let theta = (u2 as f32) * 2.0 * PI;
+                        let u1: f64 = (s1 as f64) / ((u64::MAX as f64) + 1.0);
+                        let u2: f64 = (s2 as f64) / ((u64::MAX as f64) + 1.0);
+                        let r: f32 = radius * (u1.sqrt() as f32);
+                        let theta: f32 = (u2 as f32) * 2.0 * PI;
 
                         unsafe {
-                            let idx = start + i + k;
+                            let idx: usize = start + i + k;
                             *x_ptr.add(idx) = r * theta.cos() + center_x;
                             *y_ptr.add(idx) = r * theta.sin() + center_y;
                             *vx_ptr.add(idx) = vx0;
@@ -937,19 +940,19 @@ pub fn init_cluster(
                 }
 
                 for j in i..len {
-                    let s1 = splitmix64(seed);
+                    let s1: u64 = splitmix64(seed);
                     seed = s1;
-                    let s2 = splitmix64(seed);
+                    let s2: u64 = splitmix64(seed);
                     seed = s2;
 
-                    let u1 = (s1 as f64) / ((u64::MAX as f64) + 1.0);
-                    let u2 = (s2 as f64) / ((u64::MAX as f64) + 1.0);
+                    let u1: f64 = (s1 as f64) / ((u64::MAX as f64) + 1.0);
+                    let u2: f64 = (s2 as f64) / ((u64::MAX as f64) + 1.0);
 
-                    let r = radius * (u1.sqrt() as f32);
-                    let theta = (u2 as f32) * 2.0 * PI;
+                    let r: f32 = radius * (u1.sqrt() as f32);
+                    let theta: f32 = (u2 as f32) * 2.0 * PI;
 
                     unsafe {
-                        let idx = start + j;
+                        let idx: usize = start + j;
                         *x_ptr.add(idx) = r * theta.cos() + center_x;
                         *y_ptr.add(idx) = r * theta.sin() + center_y;
                         *vx_ptr.add(idx) = vx0;
@@ -979,28 +982,29 @@ pub struct SimulationData {
 
 impl SimulationData {
     pub fn new(config: &Config, start_frame: u64) -> Self {
-        let default_cpus = num_cpus::get();
-        let sim_threads = config.sim_threads.unwrap_or(default_cpus);
-        let render_threads =
+        let default_cpus: usize = num_cpus::get();
+        let sim_threads: usize = config.sim_threads.unwrap_or(default_cpus);
+
+        let render_threads: usize =
             config.render_threads.unwrap_or(max(1, default_cpus / 2));
 
-        let sim_pool = Arc::new(
+        let sim_pool: Arc<ThreadPool> = Arc::new(
             ThreadPoolBuilder::new()
                 .num_threads(sim_threads)
                 .build()
                 .expect("Failed to build sim thread pool"),
         );
 
-        let render_pool = Arc::new(
+        let render_pool: Arc<ThreadPool> = Arc::new(
             ThreadPoolBuilder::new()
                 .num_threads(render_threads)
                 .build()
                 .expect("Failed to build render thread pool"),
         );
 
-        let palette = Arc::new(build_palette());
+        let palette: Arc<Vec<Vector3D<u8>>> = Arc::new(build_palette());
 
-        let (bx, by) = shape_boundary(
+        let (bx, by): (Vec<f32>, Vec<f32>) = shape_boundary(
             config.a,
             config.b,
             config.n_exp,
@@ -1008,21 +1012,24 @@ impl SimulationData {
             SHAPE_SAMPLE_POINTS,
         );
 
-        let (x_edges, y_edges) =
+        let (x_edges, y_edges): (Vec<f32>, Vec<f32>) =
             histogram_edges(config.a, config.b, config.res, HISTOGRAM_FACTOR);
 
-        let out_px = compute_out_px(config.dpi);
-        let sample_n = (config.res as usize).max(3);
-        let boundary_pixels = Arc::new(precompute_boundary_pixels(
-            &bx, &by, &x_edges, &y_edges, out_px, sample_n,
-        ));
+        let out_px: (u32, u32) = compute_out_px(config.dpi);
+        let sample_n: usize = (config.res as usize).max(3);
 
-        let pixel_bin_map =
+        let boundary_pixels: Arc<Vec<(i64, i64)>> =
+            Arc::new(precompute_boundary_pixels(
+                &bx, &by, &x_edges, &y_edges, out_px, sample_n,
+            ));
+
+        let pixel_bin_map: Arc<Vec<usize>> =
             Arc::new(precompute_pixel_bin_map(out_px, config.res as usize));
-        let thickness_offsets =
+
+        let thickness_offsets: Arc<Vec<(i64, i64)>> =
             Arc::new(precompute_thickness_offsets(BOUNDARY_THICKNESS));
 
-        let mut system = init_cluster(
+        let mut system: ParticleSystem = init_cluster(
             config.n_particles,
             config.radius,
             config.center_x,
@@ -1061,7 +1068,7 @@ impl SimulationData {
 }
 
 pub fn compute_out_px(dpi: u32) -> (u32, u32) {
-    let size = (FIG_INCHES * dpi as f32).round() as u32;
+    let size: u32 = (FIG_INCHES * dpi as f32).round() as u32;
     (size, size)
 }
 
@@ -1073,32 +1080,29 @@ pub fn run_frame_generation(
     output_path: &str,
     fps: u64,
 ) -> Result<f64, Box<dyn Error>> {
-    let (width, height) = compute_out_px(config.dpi);
+    let (width, height): (u32, u32) = compute_out_px(config.dpi);
 
-    let start_time = Instant::now();
+    let start_time: Instant = Instant::now();
 
-    let total_to_generate =
+    let total_to_generate: u64 =
         if n_frames > start_frame { n_frames - start_frame } else { 0 };
 
-    let pb = ProgressBar::new(total_to_generate);
+    let progress_bar: ProgressBar = ProgressBar::new(total_to_generate);
 
-    pb.set_style(
+    progress_bar.set_style(
         ProgressStyle::default_bar()
             .template("{prefix} {bar:40.cyan/blue} {pos:>7}/{len:7} {percent:>3}% ({eta})")?
             .progress_chars("##-"),
     );
 
-    pb.set_prefix("Generating frames");
+    progress_bar.set_prefix("Generating frames");
 
-    let bins = config.res as usize;
-    let total_bins = bins * bins;
-
-    let mut histogram_buf = vec![0f32; total_bins];
-    let mut h_log_flat = vec![0f32; total_bins];
-
-    let mut cmd = Command::new("ffmpeg");
+    let bins: usize = config.res as usize;
+    let total_bins: usize = bins * bins;
+    let mut histogram_buf: Vec<f32> = vec![0f32; total_bins];
+    let mut h_log_flat: Vec<f32> = vec![0f32; total_bins];
+    let mut cmd: Command = Command::new("ffmpeg");
     let mut args: Vec<String> = Vec::new();
-
     args.push("-y".to_string());
     args.push("-hide_banner".to_string());
     args.push("-loglevel".to_string());
@@ -1136,17 +1140,21 @@ pub fn run_frame_generation(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    let mut child = cmd.spawn()?;
-    let child_stdin =
+    let mut child: Child = cmd.spawn()?;
+
+    let child_stdin: ChildStdin =
         child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
 
-    let (tx, rx) = bounded::<RgbImage>(12);
+    let (tx, rx): (Sender<RgbImage>, Receiver<RgbImage>) =
+        bounded::<RgbImage>(12);
 
     scope(|s| -> Result<(), Box<dyn Error>> {
-        let writer_handle = s.spawn(move || {
-            let mut writer = child_stdin;
+        let writer_handle: ScopedJoinHandle<()> = s.spawn(move || {
+            let mut writer: ChildStdin = child_stdin;
+
             while let Ok(img) = rx.recv() {
-                let raw = img.into_raw();
+                let raw: Vec<u8> = img.into_raw();
+
                 if let Err(e) = writer.write_all(&raw) {
                     eprintln!("ffmpeg stdin write error: {}", e);
                     break;
@@ -1176,13 +1184,12 @@ pub fn run_frame_generation(
                 &mut histogram_buf,
             );
 
-            h_log_flat.par_iter_mut().zip(&histogram_buf).for_each(
-                |(h, &v)| {
-                    *h = v + config.epsilon;
-                },
-            );
+            h_log_flat
+                .par_iter_mut()
+                .zip(&histogram_buf)
+                .for_each(|(h, &v)| *h = v + config.epsilon);
 
-            let frame_image = render(
+            let frame_image: RgbImage = render(
                 &h_log_flat,
                 &sim_data.boundary_pixels,
                 &sim_data.palette,
@@ -1199,7 +1206,7 @@ pub fn run_frame_generation(
                 )));
             }
 
-            pb.inc(1);
+            progress_bar.inc(1);
         }
 
         drop(tx);
@@ -1207,11 +1214,12 @@ pub fn run_frame_generation(
         Ok(())
     })?;
 
-    let stdout =
+    let stdout: ChildStdout =
         child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
-    let reader = BufReader::new(stdout);
 
-    let spinner = ProgressBar::new_spinner();
+    let reader: BufReader<ChildStdout> = BufReader::new(stdout);
+
+    let spinner: ProgressBar = ProgressBar::new_spinner();
 
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -1222,10 +1230,11 @@ pub fn run_frame_generation(
     spinner.enable_steady_tick(Duration::from_millis(100));
 
     let _status = scope(|s| -> Result<process::ExitStatus, Box<dyn Error>> {
-        let spinner_clone = spinner.clone();
+        let spinner_clone: ProgressBar = spinner.clone();
 
-        let parser_handle = s.spawn(move || {
-            let mut last_msg = String::new();
+        let parser_handle: ScopedJoinHandle<()> = s.spawn(move || {
+            let mut last_msg: String = String::new();
+
             for line_res in reader.lines() {
                 if let Ok(line) = line_res {
                     if line.is_empty() {
@@ -1233,8 +1242,12 @@ pub fn run_frame_generation(
                     }
 
                     let parts: Vec<&str> = line.split_whitespace().collect();
-                    let kv_map = parse_kv_from_parts(&parts);
-                    let (msg, is_end) = build_progress_msg(&kv_map);
+
+                    let kv_map: AHashMap<String, String> =
+                        parse_kv_from_parts(&parts);
+
+                    let (msg, is_end): (String, bool) =
+                        build_progress_msg(&kv_map);
 
                     if msg != last_msg {
                         spinner_clone.set_message(msg.clone());
@@ -1248,16 +1261,14 @@ pub fn run_frame_generation(
             }
         });
 
-        let status = child.wait()?;
+        let status: ExitStatus = child.wait()?;
         let _ = parser_handle.join();
         Ok(status)
     })?;
 
     spinner.finish_and_clear();
-    pb.finish_with_message("Frame generation complete");
-
-    let elapsed = start_time.elapsed().as_secs_f64();
-
+    progress_bar.finish_with_message("Frame generation complete");
+    let elapsed: f64 = start_time.elapsed().as_secs_f64();
     Ok(elapsed)
 }
 
@@ -1267,10 +1278,11 @@ pub fn generate_video(
     fps: u64,
     total_frames: u64,
 ) -> Result<(), Box<dyn Error>> {
-    let frames_pattern =
+    let frames_pattern: String =
         frames_dir.join("%d.png").to_string_lossy().to_string();
 
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd: Command = Command::new("ffmpeg");
+
     cmd.arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -1299,14 +1311,13 @@ pub fn generate_video(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    let mut child = cmd.spawn()?;
+    let mut child: Child = cmd.spawn()?;
 
-    let stdout =
+    let stdout: ChildStdout =
         child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
 
-    let reader = BufReader::new(stdout);
-
-    let spinner = ProgressBar::new_spinner();
+    let reader: BufReader<ChildStdout> = BufReader::new(stdout);
+    let spinner: ProgressBar = ProgressBar::new_spinner();
 
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -1316,19 +1327,18 @@ pub fn generate_video(
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let mut last_msg = String::new();
+    let mut last_msg: String = String::new();
 
     for line_res in reader.lines() {
-        let line = line_res?;
+        let line: String = line_res?;
 
         if line.is_empty() {
             continue;
         }
 
         let parts: Vec<&str> = line.split_whitespace().collect();
-        let kv_map = parse_kv_from_parts(&parts);
-
-        let (msg, is_end) = build_progress_msg(&kv_map);
+        let kv_map: AHashMap<String, String> = parse_kv_from_parts(&parts);
+        let (msg, is_end): (String, bool) = build_progress_msg(&kv_map);
 
         if msg != last_msg {
             spinner.set_message(msg.clone());
@@ -1340,21 +1350,21 @@ pub fn generate_video(
         }
     }
 
-    let status = child.wait()?;
+    let status: ExitStatus = child.wait()?;
 
     spinner.finish_and_clear();
 
-    let final_pb = ProgressBar::new(total_frames);
+    let final_progress_bar: ProgressBar = ProgressBar::new(total_frames);
 
-    final_pb.set_style(
+    final_progress_bar.set_style(
         ProgressStyle::default_bar()
             .template("{prefix} {bar:40.green/white} {pos:>7}/{len:7} {percent:>3}% ({elapsed})")?
             .progress_chars("=>-"),
     );
 
-    final_pb.set_prefix("Generating video");
-    final_pb.set_position(total_frames);
-    final_pb.finish_with_message("Video generation complete");
+    final_progress_bar.set_prefix("Generating video");
+    final_progress_bar.set_position(total_frames);
+    final_progress_bar.finish_with_message("Video generation complete");
 
     if !status.success() {
         return Err("ffmpeg failed to generate video".into());
@@ -1364,7 +1374,7 @@ pub fn generate_video(
 }
 
 pub fn size_to_bytes(s: &str) -> Option<u64> {
-    let s = s.trim();
+    let s: &str = s.trim();
 
     if s.is_empty() || s.eq_ignore_ascii_case("N/A") {
         return None;
@@ -1374,9 +1384,9 @@ pub fn size_to_bytes(s: &str) -> Option<u64> {
         return Some(v);
     }
 
-    let s_upper = s.to_uppercase();
+    let s_upper: String = s.to_uppercase();
 
-    let units = [
+    let units: [(&str, u64); 13] = [
         ("B", 1u64),
         ("KB", 1_000u64),
         ("KIB", 1024u64),
@@ -1394,7 +1404,7 @@ pub fn size_to_bytes(s: &str) -> Option<u64> {
 
     for (unit, mul) in &units {
         if s_upper.ends_with(unit) {
-            let num = s_upper.trim_end_matches(unit).trim();
+            let num: &str = s_upper.trim_end_matches(unit).trim();
 
             if let Ok(f) = num.parse::<f64>() {
                 return Some((f * (*mul as f64)).round() as u64);
@@ -1407,24 +1417,27 @@ pub fn size_to_bytes(s: &str) -> Option<u64> {
 
 pub fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
     let mut kv_map: AHashMap<String, String> = AHashMap::new();
-    let mut i = 0;
+    let mut i: usize = 0;
 
     while i < parts.len() {
-        let part = parts[i];
+        let part: &str = parts[i];
 
-        if let Some(eq_pos) = part.find('=') {
-            let key = part[..eq_pos].trim().to_string();
-            let mut val = part[eq_pos + 1..].trim();
+        match part.find('=') {
+            Some(eq_pos) => {
+                let key = part[..eq_pos].trim().to_string();
+                let mut val = part[eq_pos + 1..].trim();
 
-            let next_has_value =
-                parts.get(i + 1).map_or(false, |p| !p.contains('='));
+                let next_has_value: bool =
+                    parts.get(i + 1).map_or(false, |p| !p.contains('='));
 
-            if val.is_empty() && next_has_value {
-                i += 1;
-                val = parts[i].trim();
-            }
+                if val.is_empty() && next_has_value {
+                    i += 1;
+                    val = parts[i].trim();
+                }
 
-            kv_map.insert(key, val.to_string());
+                kv_map.insert(key, val.to_string());
+            },
+            None => {},
         }
         i += 1;
     }
@@ -1433,13 +1446,16 @@ pub fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
 }
 
 pub fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
-    let mut parts_msg = Vec::new();
+    let mut parts_msg: Vec<String> = Vec::new();
 
-    if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size"))
-    {
-        if let Some(bytes) = size_to_bytes(size) {
-            parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6));
-        }
+    match kv_map.get("total_size").or_else(|| kv_map.get("size")) {
+        Some(size) => match size_to_bytes(size) {
+            Some(bytes) => {
+                parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6))
+            },
+            None => {},
+        },
+        None => {},
     }
 
     if let Some(fps_s) = kv_map.get("fps") {
@@ -1450,15 +1466,18 @@ pub fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
         parts_msg.push(format!("speed:{}", speed.trim()));
     }
 
-    let out_time_opt = kv_map.get("progress").or_else(|| kv_map.get("time"));
+    let out_time_opt: Option<&String> =
+        kv_map.get("progress").or_else(|| kv_map.get("time"));
 
     if let Some(out_time) = out_time_opt {
         parts_msg.push(format!("time:{}", out_time.trim()));
     }
 
-    let msg = parts_msg.join(" | ");
-    let is_end =
+    let msg: String = parts_msg.join(" | ");
+
+    let is_end: bool =
         kv_map.get("progress").map(|p| p.trim() == "end").unwrap_or(false);
+
     (msg, is_end)
 }
 
@@ -1471,7 +1490,7 @@ pub fn try_insert_numeric(candidate: &str, used_indices: &mut AHashSet<u64>) {
 }
 
 pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
-    let mp4_dir = Path::new("mp4");
+    let mp4_dir: &Path = Path::new("mp4");
 
     if !mp4_dir.exists() {
         create_dir_all(mp4_dir)?;
@@ -1483,28 +1502,38 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
         .map(|entry| entry.path())
         .collect();
 
-    let used_indices = Arc::new(Mutex::new(AHashSet::new()));
+    let used_indices: Arc<Mutex<AHashSet<u64>>> =
+        Arc::new(Mutex::new(AHashSet::new()));
 
     paths.par_iter().for_each(|path| {
         if path.extension().map_or(false, |ext| ext == "mp4") {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if let Ok(mut set) = used_indices.lock() {
-                    try_insert_numeric(stem, &mut set);
-                }
+            match path.file_stem().and_then(|s| s.to_str()) {
+                Some(stem) => match used_indices.lock() {
+                    Ok(mut set) => {
+                        try_insert_numeric(stem, &mut set);
+                    },
+                    Err(..) => {},
+                },
+                None => {},
             }
         } else if path.is_dir() {
-            if let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) {
-                if let Ok(mut set) = used_indices.lock() {
-                    try_insert_numeric(dir_name, &mut set);
-                }
+            match path.file_name().and_then(|s| s.to_str()) {
+                Some(dir_name) => match used_indices.lock() {
+                    Ok(mut set) => {
+                        try_insert_numeric(dir_name, &mut set);
+                    },
+                    Err(..) => {},
+                },
+                None => {},
             }
         }
     });
 
-    let used_snapshot = {
-        let guard = used_indices
+    let used_snapshot: AHashSet<u64> = {
+        let guard: MutexGuard<AHashSet<u64>> = used_indices
             .lock()
             .map_err(|e| format!("Mutex poisoned: {}", e))?;
+
         guard.clone()
     };
 
@@ -1519,13 +1548,13 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
 
 pub fn choose_video_index() -> Result<u64, Box<dyn Error>> {
     println!("Enter video index (or Enter for next available): ");
-    let mut input = String::new();
+    let mut input: String = String::new();
     stdin().read_line(&mut input)?;
 
-    let input = input.trim();
+    let input: &str = input.trim();
 
     if input.is_empty() {
-        let index = next_available_index()?;
+        let index: u64 = next_available_index()?;
         println!("Using next available index: {}", index);
         Ok(index)
     } else {
@@ -1537,18 +1566,18 @@ pub fn prepare_video_dirs_and_meta(
     index: u64,
     config: &Config,
 ) -> Result<VideoDirs, Box<dyn Error>> {
-    let video_dir = Path::new("mp4").join(index.to_string());
-    let frames_dir = video_dir.join("frames");
+    let video_dir: PathBuf = Path::new("mp4").join(index.to_string());
+    let frames_dir: PathBuf = video_dir.join("frames");
 
     create_dir_all(&frames_dir)?;
 
-    let meta_path = video_dir.join("meta.json");
+    let meta_path: PathBuf = video_dir.join("meta.json");
 
-    let meta = if meta_path.exists() {
-        let meta_content = read_to_string(&meta_path)?;
+    let meta: Value = if meta_path.exists() {
+        let meta_content: String = read_to_string(&meta_path)?;
         from_str(&meta_content)?
     } else {
-        let mut meta = Map::new();
+        let mut meta: Map<String, Value> = Map::new();
         meta.insert("constants".to_string(), config.constants());
         meta.insert("date".to_string(), Value::String(Utc::now().to_rfc3339()));
         meta.insert("last_frame".to_string(), Value::from(0));
@@ -1557,7 +1586,7 @@ pub fn prepare_video_dirs_and_meta(
         Object(meta)
     };
 
-    let start_frame =
+    let start_frame: u64 =
         meta.get("last_frame").and_then(Value::as_u64).unwrap_or(0);
 
     Ok(VideoDirs { video_dir, frames_dir, meta, start_frame })
@@ -1571,29 +1600,32 @@ pub struct VideoDirs {
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
-    let program_start = Instant::now();
-    let config = Config::parse();
-    let n_frames = config.fps * config.duration_s;
-    let index = choose_video_index()?;
-    let dirs = prepare_video_dirs_and_meta(index, &config)?;
+    let program_start: Instant = Instant::now();
+    let config: Config = Config::parse();
+    let n_frames: u64 = config.fps * config.duration_s;
+    let index: u64 = choose_video_index()?;
+    let dirs: VideoDirs = prepare_video_dirs_and_meta(index, &config)?;
 
     println!("\n--- Video Stats ---");
 
-    if let Some(map) = dirs.meta.as_object() {
-        for (key, value) in map {
-            if key != "constants" {
-                println!("{}: {}", key, value);
+    match dirs.meta.as_object() {
+        Some(map) => {
+            for (key, value) in map {
+                if key != "constants" {
+                    println!("{}: {}", key, value);
+                }
             }
-        }
+        },
+        None => {},
     }
 
     let entries: Vec<DirEntry> =
         read_dir(&dirs.frames_dir)?.collect::<Result<Vec<_>, _>>()?;
 
-    let (frame_count_res, total_size_bytes_res) = entries
+    let (frame_count_res, total_size_bytes_res): (u64, u64) = entries
         .par_iter()
         .filter_map(|entry| {
-            let path = entry.path();
+            let path: PathBuf = entry.path();
             if path.extension().map_or(false, |ext| ext == "png") {
                 match entry.metadata() {
                     Ok(m) => Some((1u64, m.len())),
@@ -1620,7 +1652,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     println!("Continue generating frames? (y/n): ");
 
-    let mut response = String::new();
+    let mut response: String = String::new();
     stdin().read_line(&mut response)?;
 
     if response.trim().to_lowercase() != "y" {
@@ -1632,13 +1664,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let sim_data = SimulationData::new(&config, dirs.start_frame);
+    let sim_data: SimulationData =
+        SimulationData::new(&config, dirs.start_frame);
 
     println!("Running simulation...");
 
-    let output_path = format!("mp4/{}.mp4", index);
+    let output_path: String = format!("mp4/{}.mp4", index);
 
-    let compute_time = run_frame_generation(
+    let compute_time: f64 = run_frame_generation(
         sim_data,
         &config,
         n_frames,
@@ -1647,11 +1680,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         config.fps,
     )?;
 
-    let total_compute_time =
+    let total_compute_time: f64 =
         dirs.meta.get("compute_time").and_then(|v| v.as_f64()).unwrap_or(0.0)
             + compute_time;
 
-    let mut updated_meta = dirs.meta.clone();
+    let mut updated_meta: Value = dirs.meta.clone();
     updated_meta["compute_time"] = Value::from(total_compute_time);
     updated_meta["last_frame"] = Value::from(n_frames);
     write(dirs.video_dir.join("meta.json"), to_string_pretty(&updated_meta)?)?;
@@ -1674,17 +1707,17 @@ pub fn render(
     pixel_bin_map: &Arc<Vec<usize>>,
     thickness_offsets: &Arc<Vec<(i64, i64)>>,
 ) -> RgbImage {
-    let (width, height) = out_px;
-    let w = width as usize;
+    let (width, height): (u32, u32) = out_px;
+    let w: usize = width as usize;
 
-    let mut img = RgbImage::new(width, height);
+    let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = RgbImage::new(width, height);
 
-    let palette_len = palette.len();
+    let palette_len: usize = palette.len();
 
-    let max_v =
+    let max_v: f32 =
         h_log_flat.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(0.0);
 
-    let scale = if max_v > 0.0 {
+    let scale: f32 = if max_v > 0.0 {
         (palette_len as f32 - 1.0) / (max_v.sqrt() * 1.05f32)
     } else {
         1.0
@@ -1695,10 +1728,10 @@ pub fn render(
     pool.install(|| {
         img.par_chunks_mut((width * 3) as usize).enumerate().for_each(
             |(y, row)| {
-                let base_idx = y * w;
+                let base_idx: usize = y * w;
 
                 for (x, pixel) in row.chunks_mut(3).enumerate() {
-                    let idx = base_idx + x;
+                    let idx: usize = base_idx + x;
 
                     if idx >= pixel_bin_map.len() {
                         pixel[0] = 0;
@@ -1717,8 +1750,11 @@ pub fn render(
                     }
 
                     let v = h_log_flat[bin].max(0.0);
-                    let pi = ((v.sqrt() * scale) as usize).min(palette_len - 1);
-                    let col = palette_ref[pi];
+
+                    let pi: usize =
+                        ((v.sqrt() * scale) as usize).min(palette_len - 1);
+
+                    let col: [u8; 3] = palette_ref[pi];
 
                     pixel[0] = col[0];
                     pixel[1] = col[1];
