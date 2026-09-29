@@ -437,7 +437,7 @@ fn bench_manual_report(c: &mut Criterion) {
             }
 
             {
-                let case = "compute_histogram_manual_128";
+                let case: &str = "compute_histogram_manual_128";
                 let mut samples = Vec::with_capacity(runs);
 
                 let sys = init_cluster(
