@@ -660,4 +660,5 @@ criterion_group!(
     bench_render_small,
     bench_manual_report
 );
+
 criterion_main!(benches);
