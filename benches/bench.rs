@@ -1,5 +1,5 @@
 use std::{
-    f32::consts,
+    f32::consts::E,
     fs::{OpenOptions, create_dir_all},
     hint::black_box,
     io::Write,
@@ -7,7 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use consts::E;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use particleanimatorrust::{
     BOUNDARY_THICKNESS, ParticleSystem, bresenham_points, build_palette,
