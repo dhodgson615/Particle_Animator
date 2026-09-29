@@ -585,7 +585,7 @@ fn bench_manual_report(c: &mut Criterion) {
 
                 let palette: Arc<Vec<Vector3D<u8>>> = Arc::new(build_palette());
 
-                let (bx, by) =
+                let (bx, by): (Vec<f32>, Vec<f32>) =
                     shape_boundary(1.0f32, 1.0f32, 2.0f32, 2.0f32, 500usize);
 
                 let (x_edges, y_edges) =
