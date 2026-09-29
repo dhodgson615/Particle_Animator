@@ -444,7 +444,7 @@ fn bench_manual_report(c: &mut Criterion) {
                     4096u64, 0.1f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32,
                 );
 
-                let (x_edges, y_edges) =
+                let (x_edges, y_edges): (Vec<f32>, Vec<f32>) =
                     histogram_edges(1.0f32, 1.0f32, 128, 1.25f32);
 
                 let out = vec![0f32; 128 * 128];
