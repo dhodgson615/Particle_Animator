@@ -1,6 +1,6 @@
 use std::{
     f32::consts::E,
-    fs::{OpenOptions, create_dir_all},
+    fs::{File, OpenOptions, create_dir_all},
     hint::black_box,
     io::Write,
     sync::Arc,
@@ -11,6 +11,7 @@ use criterion::{
     BenchmarkGroup, BenchmarkId, Criterion, criterion_group, criterion_main,
     measurement::WallTime,
 };
+use image::RgbImage;
 use particleanimatorrust::{
     BOUNDARY_THICKNESS, ParticleSystem, Vector3D, bresenham_points,
     build_palette, compute_histogram, compute_out_px, histogram_edges,
