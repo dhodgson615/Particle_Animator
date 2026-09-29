@@ -3,3 +3,4 @@
 mp4/
 target/
 src/build_constants.rs
+Cargo.lock
