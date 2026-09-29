@@ -564,7 +564,7 @@ fn bench_manual_report(c: &mut Criterion) {
                         &bx, &by, &x_edges, &y_edges, out_px, 256usize,
                     );
 
-                    let secs = start.elapsed().as_secs_f64();
+                    let secs: f64 = start.elapsed().as_secs_f64();
                     samples.push(secs);
                     println!("{},run={} -> {:.6}s", case, run_idx + 1, secs);
                 }
