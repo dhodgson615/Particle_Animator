@@ -558,7 +558,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 }
 
                 for run_idx in 0..runs {
-                    let start = Instant::now();
+                    let start: Instant = Instant::now();
 
                     let _ = precompute_boundary_pixels(
                         &bx, &by, &x_edges, &y_edges, out_px, 256usize,
