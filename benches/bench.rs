@@ -268,7 +268,7 @@ fn bench_manual_report(c: &mut Criterion) {
                 let case_prefix: &str = "pow_fast_manual";
 
                 for &exp in &[1.0f32, 2.0f32, 3.0f32, 4.0f32, E] {
-                    let mut samples = Vec::with_capacity(runs);
+                    let mut samples: Vec<f64> = Vec::with_capacity(runs);
 
                     for _ in 0..warmup {
                         for _ in 0..10000 {
