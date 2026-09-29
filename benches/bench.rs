@@ -7,7 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{
+    BenchmarkGroup, BenchmarkId, Criterion, criterion_group, criterion_main,
+    measurement::WallTime,
+};
 use particleanimatorrust::{
     BOUNDARY_THICKNESS, ParticleSystem, bresenham_points, build_palette,
     compute_histogram, compute_out_px, histogram_edges, init_cluster, pow_fast,
@@ -17,8 +20,8 @@ use particleanimatorrust::{
 use rayon::ThreadPoolBuilder;
 
 fn bench_pow_fast(c: &mut Criterion) {
-    let mut g = c.benchmark_group("pow_fast");
-    let base = black_box(1.2345f32);
+    let mut g: BenchmarkGroup<WallTime> = c.benchmark_group("pow_fast");
+    let base: f32 = black_box(1.2345f32);
 
     for &exp in &[1.0f32, 2.0f32, 3.0f32, 4.0f32, E] {
         g.bench_with_input(BenchmarkId::from_parameter(exp), &exp, |b, &e| {
