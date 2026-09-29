@@ -260,7 +260,7 @@ fn bench_manual_report(c: &mut Criterion) {
     c.bench_function("manual_verbose_report", |b| {
         b.iter_custom(|_iters| {
             let warmup: usize = 5usize;
-            let runs = 30usize;
+            let runs: usize = 30usize;
 
             write_csv_header();
 
