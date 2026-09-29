@@ -247,7 +247,7 @@ fn append_csv_line(
         .open("bench/bench_report.csv")
         .expect("open report file");
 
-    let (min, median, mean, max, std) = stats;
+    let (min, median, mean, max, std): (f64, f64, f64, f64, f64) = stats;
 
     let _ = writeln!(
         f,
