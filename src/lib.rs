@@ -1225,7 +1225,7 @@ pub fn run_frame_generation(
     spinner.set_prefix("Generating video");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let _status = scope(|s| -> Result<process::ExitStatus, Box<dyn Error>> {
+    let _status = scope(|s| -> Result<ExitStatus, Box<dyn Error>> {
         let spinner_clone: ProgressBar = spinner.clone();
 
         let parser_handle: ScopedJoinHandle<()> = s.spawn(move || {
