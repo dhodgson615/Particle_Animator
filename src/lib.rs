@@ -6,7 +6,7 @@ use std::{
     io::{BufRead, BufReader, Write, stdin},
     path::{Path, PathBuf},
     process::{
-        self, Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio,
+        Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio,
     },
     sync::{
         Arc, Mutex, MutexGuard,
