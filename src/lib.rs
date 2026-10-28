@@ -1176,7 +1176,7 @@ pub fn run_frame_generation(
                 &sim_data.x_edges,
                 &sim_data.y_edges,
                 config.res,
-                &*sim_data.sim_pool,
+                &sim_data.sim_pool,
                 &mut histogram_buf,
             );
 
