@@ -1081,7 +1081,6 @@ pub fn run_frame_generation(
     fps: u64,
 ) -> Result<f64, Box<dyn Error>> {
     let (width, height): (u32, u32) = compute_out_px(config.dpi);
-
     let start_time: Instant = Instant::now();
 
     let total_to_generate: u64 = n_frames.saturating_sub(start_frame);
