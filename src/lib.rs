@@ -1446,14 +1446,8 @@ pub fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
 pub fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
     let mut parts_msg: Vec<String> = Vec::new();
 
-    match kv_map.get("total_size").or_else(|| kv_map.get("size")) {
-        Some(size) => match size_to_bytes(size) {
-            Some(bytes) => {
-                parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6))
-            },
-            None => {},
-        },
-        None => {},
+    if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) && let Some(bytes) = size_to_bytes(size) {
+        parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6))
     }
 
     if let Some(fps_s) = kv_map.get("fps") {
