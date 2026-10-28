@@ -24,7 +24,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use image::{ImageBuffer, Rgb, RgbImage};
 use indicatif::{ProgressBar, ProgressStyle};
 use mimalloc::MiMalloc;
-use num_cpus;
+use num_cpus::get;
 use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{
@@ -564,12 +564,10 @@ pub fn draw_boundary(
                 for (x, pixel) in row.chunks_mut(3).enumerate() {
                     let idx: usize = base_row_idx + x;
 
-                    if pixel_flags[idx].load(Relaxed) != 0 {
-                        if pixel.len() >= 3 {
-                            pixel[0] = 255;
-                            pixel[1] = 255;
-                            pixel[2] = 255;
-                        }
+                    if pixel_flags[idx].load(Relaxed) != 0 && pixel.len() >= 3 {
+                        pixel[0] = 255;
+                        pixel[1] = 255;
+                        pixel[2] = 255;
                     }
                 }
             },
@@ -585,17 +583,12 @@ pub struct Particle {
     pub vy: f32,
 }
 
+#[derive(Default)]
 pub struct ParticleSystem {
     pub x:  Vec<f32>,
     pub y:  Vec<f32>,
     pub vx: Vec<f32>,
     pub vy: Vec<f32>,
-}
-
-impl Default for ParticleSystem {
-    fn default() -> Self {
-        Self { x: Vec::new(), y: Vec::new(), vx: Vec::new(), vy: Vec::new() }
-    }
 }
 
 impl ParticleSystem {
@@ -889,8 +882,8 @@ pub fn init_cluster(
         z ^ (z >> 31)
     }
 
-    let n_threads: usize = num_cpus::get().min(n_usize.max(1));
-    let chunk: usize = (n_usize + n_threads - 1) / n_threads;
+    let n_threads: usize = get().min(n_usize.max(1));
+    let chunk: usize = n_usize.div_ceil(n_threads);
     let x_addr: usize = system.x.as_mut_ptr() as usize;
     let y_addr: usize = system.y.as_mut_ptr() as usize;
     let vx_addr: usize = system.vx.as_mut_ptr() as usize;
@@ -982,7 +975,7 @@ pub struct SimulationData {
 
 impl SimulationData {
     pub fn new(config: &Config, start_frame: u64) -> Self {
-        let default_cpus: usize = num_cpus::get();
+        let default_cpus: usize = get();
         let sim_threads: usize = config.sim_threads.unwrap_or(default_cpus);
 
         let render_threads: usize =
@@ -1231,28 +1224,25 @@ pub fn run_frame_generation(
         let parser_handle: ScopedJoinHandle<()> = s.spawn(move || {
             let mut last_msg: String = String::new();
 
-            for line_res in reader.lines() {
-                if let Ok(line) = line_res {
-                    if line.is_empty() {
-                        continue;
-                    }
+            for line in reader.lines().flatten() {
+                if line.is_empty() {
+                    continue;
+                }
 
-                    let parts: Vec<&str> = line.split_whitespace().collect();
+                let parts: Vec<&str> = line.split_whitespace().collect();
 
-                    let kv_map: AHashMap<String, String> =
-                        parse_kv_from_parts(&parts);
+                let kv_map: AHashMap<String, String> =
+                    parse_kv_from_parts(&parts);
 
-                    let (msg, is_end): (String, bool) =
-                        build_progress_msg(&kv_map);
+                let (msg, is_end): (String, bool) = build_progress_msg(&kv_map);
 
-                    if msg != last_msg {
-                        spinner_clone.set_message(msg.clone());
-                        last_msg = msg;
-                    }
+                if msg != last_msg {
+                    spinner_clone.set_message(msg.clone());
+                    last_msg = msg;
+                }
 
-                    if is_end {
-                        break;
-                    }
+                if is_end {
+                    break;
                 }
             }
         });
@@ -1416,22 +1406,19 @@ pub fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
     while i < parts.len() {
         let part: &str = parts[i];
 
-        match part.find('=') {
-            Some(eq_pos) => {
-                let key = part[..eq_pos].trim().to_string();
-                let mut val = part[eq_pos + 1..].trim();
+        if let Some(eq_pos) = part.find('=') {
+            let key = part[..eq_pos].trim().to_string();
+            let mut val = part[eq_pos + 1..].trim();
 
-                let next_has_value: bool =
-                    parts.get(i + 1).map_or(false, |p| !p.contains('='));
+            let next_has_value: bool =
+                parts.get(i + 1).is_some_and(|p| !p.contains('='));
 
-                if val.is_empty() && next_has_value {
-                    i += 1;
-                    val = parts[i].trim();
-                }
+            if val.is_empty() && next_has_value {
+                i += 1;
+                val = parts[i].trim();
+            }
 
-                kv_map.insert(key, val.to_string());
-            },
-            None => {},
+            kv_map.insert(key, val.to_string());
         }
         i += 1;
     }
@@ -1442,7 +1429,9 @@ pub fn parse_kv_from_parts(parts: &[&str]) -> AHashMap<String, String> {
 pub fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
     let mut parts_msg: Vec<String> = Vec::new();
 
-    if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size")) && let Some(bytes) = size_to_bytes(size) {
+    if let Some(size) = kv_map.get("total_size").or_else(|| kv_map.get("size"))
+        && let Some(bytes) = size_to_bytes(size)
+    {
         parts_msg.push(format!("{:.2}MB", bytes as f64 / 1e6))
     }
 
@@ -1470,10 +1459,10 @@ pub fn build_progress_msg(kv_map: &AHashMap<String, String>) -> (String, bool) {
 }
 
 pub fn try_insert_numeric(candidate: &str, used_indices: &mut AHashSet<u64>) {
-    if candidate.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(index) = candidate.parse::<u64>() {
-            used_indices.insert(index);
-        }
+    if candidate.chars().all(|c| c.is_ascii_digit())
+        && let Ok(index) = candidate.parse::<u64>()
+    {
+        used_indices.insert(index);
     }
 }
 
@@ -1494,26 +1483,17 @@ pub fn next_available_index() -> Result<u64, Box<dyn Error>> {
         Arc::new(Mutex::new(AHashSet::new()));
 
     paths.par_iter().for_each(|path| {
-        if path.extension().map_or(false, |ext| ext == "mp4") {
-            match path.file_stem().and_then(|s| s.to_str()) {
-                Some(stem) => match used_indices.lock() {
-                    Ok(mut set) => {
-                        try_insert_numeric(stem, &mut set);
-                    },
-                    Err(..) => {},
-                },
-                None => {},
+        if path.extension().is_some_and(|ext| ext == "mp4") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && let Ok(mut set) = used_indices.lock()
+            {
+                try_insert_numeric(stem, &mut set);
             }
-        } else if path.is_dir() {
-            match path.file_name().and_then(|s| s.to_str()) {
-                Some(dir_name) => match used_indices.lock() {
-                    Ok(mut set) => {
-                        try_insert_numeric(dir_name, &mut set);
-                    },
-                    Err(..) => {},
-                },
-                None => {},
-            }
+        } else if path.is_dir()
+            && let Some(dir_name) = path.file_name().and_then(|s| s.to_str())
+            && let Ok(mut set) = used_indices.lock()
+        {
+            try_insert_numeric(dir_name, &mut set);
         }
     });
 
@@ -1596,15 +1576,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     println!("\n--- Video Stats ---");
 
-    match dirs.meta.as_object() {
-        Some(map) => {
-            for (key, value) in map {
-                if key != "constants" {
-                    println!("{}: {}", key, value);
-                }
+    if let Some(map) = dirs.meta.as_object() {
+        for (key, value) in map {
+            if key != "constants" {
+                println!("{}: {}", key, value);
             }
-        },
-        None => {},
+        }
     }
 
     let entries: Vec<DirEntry> =
@@ -1615,7 +1592,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .filter_map(|entry| {
             let path: PathBuf = entry.path();
 
-            if path.extension().map_or(false, |ext| ext == "png") {
+            if path.extension().is_some_and(|ext| ext == "png") {
                 match entry.metadata() {
                     Ok(m) => Some((1u64, m.len())),
                     Err(_) => None,
