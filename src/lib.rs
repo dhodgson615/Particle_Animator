@@ -1754,7 +1754,7 @@ pub fn render(
 
     draw_boundary(
         &mut img,
-        &boundary_pixels.as_ref(),
+        boundary_pixels.as_ref(),
         width,
         height,
         thickness_offsets.as_ref(),
