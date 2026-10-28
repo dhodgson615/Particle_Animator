@@ -1711,7 +1711,7 @@ pub fn render(
         1.0
     };
 
-    let palette_ref: &[[u8; 3]] = &palette;
+    let palette_ref: &[[u8; 3]] = palette;
 
     pool.install(|| {
         img.par_chunks_mut((width * 3) as usize).enumerate().for_each(
