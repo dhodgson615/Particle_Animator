@@ -1085,7 +1085,7 @@ pub fn run_frame_generation(
     let start_time: Instant = Instant::now();
 
     let total_to_generate: u64 =
-        if n_frames > start_frame { n_frames - start_frame } else { 0 };
+        n_frames.saturating_sub(start_frame);
 
     let progress_bar: ProgressBar = ProgressBar::new(total_to_generate);
 
