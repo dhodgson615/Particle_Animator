@@ -1757,7 +1757,7 @@ pub fn render(
         &boundary_pixels.as_ref(),
         width,
         height,
-        &thickness_offsets.as_ref(),
+        thickness_offsets.as_ref(),
         pool,
     );
 
