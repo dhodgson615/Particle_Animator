@@ -177,8 +177,8 @@ ParticleAnimatorRust/
 │  └─ inline_sweeper.py
 ├─ .cargo/
 │  └─ config.toml
-├─ mp4/                # run outputs: per-index subdirs and final MP4s
-├─ target/             # Cargo build artifacts
+├─ mp4/                 # run outputs: per-index subdirs and final MP4s
+├─ target/
 ├─ rustfmt.toml
 ├─ todo.txt
 └─ README.md
